@@ -54,8 +54,10 @@ class LocationService {
 
     if (samples.isEmpty) {
       samples.add(await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.best,
-        timeLimit: const Duration(seconds: 20),
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.best,
+          timeLimit: Duration(seconds: 20),
+        ),
       ));
     }
     samples.sort((a, b) => a.accuracy.compareTo(b.accuracy));

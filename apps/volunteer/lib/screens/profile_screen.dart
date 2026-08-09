@@ -177,7 +177,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     width: double.infinity,
                     padding: const EdgeInsets.all(13),
                     decoration: BoxDecoration(
-                        color: Colors.orange.withOpacity(.08),
+                        color: Colors.orange.withValues(alpha: .08),
                         borderRadius: BorderRadius.circular(13)),
                     child: Text('审核说明：${report.reviewNote}',
                         style: const TextStyle(
@@ -448,7 +448,7 @@ class _ReportStatus extends StatelessWidget {
         width: 38,
         height: 38,
         decoration: BoxDecoration(
-            color: color.withOpacity(.1),
+            color: color.withValues(alpha: .1),
             borderRadius: BorderRadius.circular(11)),
         child: Icon(icon, color: color, size: 20));
   }

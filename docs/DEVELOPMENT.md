@@ -6,7 +6,7 @@
 
 ```bash
 python -m venv .venv
-pip install -r services/api/requirements.txt pytest
+pip install -r services/api/requirements-dev.txt
 
 cd apps/dashboard
 npm ci

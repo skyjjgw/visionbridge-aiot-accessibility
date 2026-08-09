@@ -121,7 +121,7 @@ printf '\n'
 curl -fsS http://127.0.0.1:8000/api/v1/admin/operations/summary
 printf '\n'
 code=$(curl -sS -o /tmp/visionbridge-admin-$STAMP.json -w '%{{http_code}}' 'http://127.0.0.1:8088/api/v1/admin/reports?status=pending')
-[ "$code" = 200 ]
+[ "$code" = 401 ]
 echo "admin-without-login-http=$code"
 code=$(curl -sS -o /tmp/visionbridge-volunteer-$STAMP.html -w '%{{http_code}}' http://127.0.0.1:8088/volunteer/)
 [ "$code" = 200 ]

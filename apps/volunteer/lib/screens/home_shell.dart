@@ -98,7 +98,7 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
           if (value == 3) profileRevision++;
           index = value;
         }),
-        indicatorColor: AppTheme.teal.withOpacity(.12),
+        indicatorColor: AppTheme.teal.withValues(alpha: .12),
         destinations: const [
           NavigationDestination(
               icon: Icon(Icons.map_outlined),

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import test from "node:test";
 
 async function render() {
@@ -34,6 +34,25 @@ test("server-renders the VisionBridge dashboard", async () => {
   assert.match(html, /城市盲道智能监管平台/);
   assert.match(html, /自有云接入/);
   assert.match(html, /树莓派实机/);
+});
+
+test("static deployment contains every referenced asset", async () => {
+  const html = await readFile(
+    new URL("../static-deploy/index.html", import.meta.url),
+    "utf8",
+  );
+  const assetPaths = [
+    ...html.matchAll(/(?:href|src)="(\/assets\/[^"]+)"/g),
+  ].map((match) => match[1]);
+
+  assert.ok(assetPaths.length >= 2, "expected CSS and JavaScript asset references");
+  for (const assetPath of new Set(assetPaths)) {
+    const asset = await stat(
+      new URL(`../static-deploy${assetPath}`, import.meta.url),
+    );
+    assert.ok(asset.isFile(), `missing static asset: ${assetPath}`);
+    assert.ok(asset.size > 0, `empty static asset: ${assetPath}`);
+  }
 });
 
 test("documents the direct-to-own-cloud data path and offline fallback", async () => {

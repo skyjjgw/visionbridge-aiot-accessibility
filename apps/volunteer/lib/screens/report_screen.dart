@@ -326,7 +326,7 @@ class _ReportScreenState extends State<ReportScreen> {
                           padding: const EdgeInsets.all(10),
                           decoration: BoxDecoration(
                               color: selected
-                                  ? AppTheme.teal.withOpacity(.1)
+                                  ? AppTheme.teal.withValues(alpha: .1)
                                   : Colors.white,
                               border: Border.all(
                                   color: selected
@@ -353,21 +353,30 @@ class _ReportScreenState extends State<ReportScreen> {
                 }).toList()),
             const SizedBox(height: 22),
             const _SectionTitle(number: '02', title: '为什么无法现场清理'),
-            ...reasons.entries.map((entry) => RadioListTile<String>(
-                contentPadding: EdgeInsets.zero,
-                value: entry.key,
+            RadioGroup<String>(
                 groupValue: cleanupReason,
-                activeColor: AppTheme.teal,
-                onChanged: (value) => setState(() => cleanupReason = value!),
-                title: Text(entry.value,
-                    style: const TextStyle(
-                        fontSize: 13, fontWeight: FontWeight.w600)))),
+                onChanged: (value) {
+                  if (value != null) {
+                    setState(() => cleanupReason = value);
+                  }
+                },
+                child: Column(
+                    children: reasons.entries
+                        .map((entry) => RadioListTile<String>(
+                            contentPadding: EdgeInsets.zero,
+                            value: entry.key,
+                            activeColor: AppTheme.teal,
+                            title: Text(entry.value,
+                                style: const TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600))))
+                        .toList())),
             if (dangerous)
               Container(
                   margin: const EdgeInsets.only(bottom: 16),
                   padding: const EdgeInsets.all(13),
                   decoration: BoxDecoration(
-                      color: Colors.orange.withOpacity(.09),
+                      color: Colors.orange.withValues(alpha: .09),
                       borderRadius: BorderRadius.circular(13)),
                   child: const Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -409,9 +418,10 @@ class _ReportScreenState extends State<ReportScreen> {
                 margin: const EdgeInsets.only(top: 10),
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                    color: AppTheme.teal.withOpacity(.07),
+                    color: AppTheme.teal.withValues(alpha: .07),
                     borderRadius: BorderRadius.circular(13),
-                    border: Border.all(color: AppTheme.teal.withOpacity(.2))),
+                    border:
+                        Border.all(color: AppTheme.teal.withValues(alpha: .2))),
                 child: Row(children: [
                   const Icon(Icons.location_on_rounded, color: AppTheme.teal),
                   const SizedBox(width: 9),
