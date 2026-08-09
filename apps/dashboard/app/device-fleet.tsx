@@ -1,5 +1,6 @@
 "use client";
 
+import { Alert, Button, Chip, Tabs, Tooltip } from "@heroui/react";
 import {
   Camera,
   Eye,
@@ -101,13 +102,13 @@ export function DeviceFleetView({ fallbackDevice }: { fallbackDevice: Device }) 
     <div className="subpage-head">
       <div><span className="eyebrow">EDGE FLEET</span><h1>边缘设备</h1><p>从设备列表进入实时识别画面，统一查看 GNSS、推理性能与视频链路。</p></div>
       <div className="fleet-head-actions">
-        <span className="architecture-badge"><Signal size={17} />{onlineCount}/{devices.length} 台在线</span>
-        <span className="architecture-badge stream-badge"><MonitorPlay size={17} />{streamCount} 路直播</span>
-        <button className="icon-button" type="button" onClick={() => void refresh()} aria-label="刷新设备"><RefreshCw size={16} className={loading ? "spin" : ""} /></button>
+        <Chip className="architecture-badge" size="sm" variant="soft"><Signal size={17} />{onlineCount}/{devices.length} 台在线</Chip>
+        <Chip className="architecture-badge stream-badge" size="sm" variant="soft"><MonitorPlay size={17} />{streamCount} 路直播</Chip>
+        <Tooltip><Button className="icon-button" isIconOnly size="sm" variant="ghost" onClick={() => void refresh()} aria-label="刷新设备"><RefreshCw size={16} className={loading ? "spin" : ""} /></Button><Tooltip.Content>刷新设备</Tooltip.Content></Tooltip>
       </div>
     </div>
 
-    {error && <div className="fleet-error">{error}，系统将在 3 秒后自动重试。</div>}
+    {error && <Alert className="fleet-error" status="warning"><Alert.Indicator /><Alert.Content><Alert.Title>设备数据暂不可用</Alert.Title><Alert.Description>{error}，系统将在 3 秒后自动重试。</Alert.Description></Alert.Content></Alert>}
 
     <div className="fleet-layout">
       <aside className="panel fleet-list-panel">
@@ -120,22 +121,21 @@ export function DeviceFleetView({ fallbackDevice }: { fallbackDevice: Device }) 
             onClick={() => selectDevice(device)}
           >
             <span className="fleet-device-icon"><Camera size={19} /></span>
-            <span className="fleet-device-copy"><strong>{device.name}</strong><small>{device.pointName}</small><em>{relativeTime(device.lastSeen)}</em></span>
-            <span className={`fleet-state state-${device.streamStatus}`}><i />{streamLabel(device)}</span>
+            <span className="fleet-device-copy"><strong>{device.name}</strong><small>{device.pointName}</small><em suppressHydrationWarning>{relativeTime(device.lastSeen)}</em></span>
+            <Chip className={`fleet-state state-${device.streamStatus}`} size="sm" variant="soft"><i />{streamLabel(device)}</Chip>
           </button>)}
         </div>
-        <div className="fleet-list-foot"><span>最近同步</span><strong>{refreshedAt.toLocaleTimeString("zh-CN", { hour12: false })}</strong></div>
+        <div className="fleet-list-foot"><span>最近同步</span><strong suppressHydrationWarning>{refreshedAt.toLocaleTimeString("zh-CN", { hour12: false })}</strong></div>
       </aside>
 
       <section className="panel stream-detail-panel">
         <div className="stream-detail-head">
           <div><span className="eyebrow">实时识别画面</span><h2>{selected.name}</h2><p>{selected.id} · {selected.pointName}</p></div>
           <div className="stream-controls">
-            <div className="stream-mode-switch" role="group" aria-label="播放协议">
-              <button type="button" className={mode === "webrtc" ? "active" : ""} onClick={() => { setMode("webrtc"); setPlayerKey((value) => value + 1); }}>WebRTC 低延迟</button>
-              <button type="button" className={mode === "hls" ? "active" : ""} onClick={() => { setMode("hls"); setPlayerKey((value) => value + 1); }}>HLS 兼容</button>
-            </div>
-            <button type="button" className="icon-button" onClick={() => setPlayerKey((value) => value + 1)} aria-label="重新连接视频"><RefreshCw size={15} /></button>
+            <Tabs className="stream-mode-switch" selectedKey={mode} onSelectionChange={(key) => { setMode(String(key) as PlayerMode); setPlayerKey((value) => value + 1); }} aria-label="播放协议">
+              <Tabs.ListContainer><Tabs.List><Tabs.Tab id="webrtc">WebRTC 低延迟</Tabs.Tab><Tabs.Tab id="hls">HLS 兼容</Tabs.Tab></Tabs.List></Tabs.ListContainer>
+            </Tabs>
+            <Tooltip><Button className="icon-button" isIconOnly size="sm" variant="ghost" onClick={() => setPlayerKey((value) => value + 1)} aria-label="重新连接视频"><RefreshCw size={15} /></Button><Tooltip.Content>重新连接视频</Tooltip.Content></Tooltip>
           </div>
         </div>
 
@@ -158,7 +158,7 @@ export function DeviceFleetView({ fallbackDevice }: { fallbackDevice: Device }) 
           <div><Eye /><span>当前观看</span><strong>{selected.streamReaders} 路</strong></div>
           <div><HardDrive /><span>模型版本</span><strong>{selected.model}</strong></div>
         </div>
-        <div className="device-coordinate stream-coordinate"><MapPinned size={18} /><div><span>最近位置</span><strong>{selected.lng.toFixed(6)}, {selected.lat.toFixed(6)}</strong></div><em>{relativeTime(selected.lastSeen)}</em></div>
+        <div className="device-coordinate stream-coordinate"><MapPinned size={18} /><div><span>最近位置</span><strong>{selected.lng.toFixed(6)}, {selected.lat.toFixed(6)}</strong></div><em suppressHydrationWarning>{relativeTime(selected.lastSeen)}</em></div>
       </section>
     </div>
   </div>;

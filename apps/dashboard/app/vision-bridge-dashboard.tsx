@@ -1,5 +1,6 @@
 "use client";
 
+import { Avatar, Button, Chip, Tooltip } from "@heroui/react";
 import {
   Activity,
   AlertTriangle,
@@ -243,7 +244,7 @@ const fetchJson = async <T,>(url: string, init?: RequestInit): Promise<T> => {
 
 function StatusPill({ status }: { status: EventItem["status"] }) {
   const labels = { suspected: "疑似", active: "未接单", dispatched: "处置中", cleared: "已闭环" };
-  return <span className={`status-pill ${statusStyles[status]}`}><span />{labels[status]}</span>;
+  return <Chip className={`status-pill ${statusStyles[status]}`} size="sm" variant="soft"><span />{labels[status]}</Chip>;
 }
 
 function MetricCard({ icon: Icon, label, value, suffix, detail, tone = "blue" }: {
@@ -325,9 +326,9 @@ function MapStage({ config, overview, onEvent }: { config: PublicConfig; overvie
       <div className="panel-head map-head">
         <div><span className="eyebrow">空间态势</span><h2>盲道事件地图</h2></div>
         <div className="map-controls">
-          <button className="chip active"><Focus size={14} />事件点</button>
-          <button className="icon-button" aria-label="定位设备"><LocateFixed size={17} /></button>
-          <button className="icon-button" aria-label="全屏地图"><ExternalLink size={17} /></button>
+          <Button className="chip active" size="sm" variant="ghost"><Focus size={14} />事件点</Button>
+          <Tooltip><Button className="icon-button" isIconOnly size="sm" variant="ghost" aria-label="定位设备"><LocateFixed size={17} /></Button><Tooltip.Content>定位巡检终端</Tooltip.Content></Tooltip>
+          <Tooltip><Button className="icon-button" isIconOnly size="sm" variant="ghost" aria-label="全屏地图"><ExternalLink size={17} /></Button><Tooltip.Content>展开地图</Tooltip.Content></Tooltip>
         </div>
       </div>
       <div className={`map-canvas ${fallback ? "fallback-map" : ""}`} ref={mapRef}>
@@ -369,12 +370,12 @@ function DeviceHealth({ device }: { device: Device }) {
 function EventQueue({ events, onSelect }: { events: EventItem[]; onSelect: (event: EventItem) => void }) {
   return (
     <section className="panel event-queue">
-      <div className="panel-head"><div><span className="eyebrow">事件闭环</span><h2>处置队列</h2></div><button className="text-button">查看全部 <ArrowRight size={14} /></button></div>
+      <div className="panel-head"><div><span className="eyebrow">事件闭环</span><h2>处置队列</h2></div><Button className="text-button" size="sm" variant="ghost">查看全部 <ArrowRight size={14} /></Button></div>
       <div className="queue-list">
         {events.slice(0, 3).map((event) => (
           <button className="queue-item" key={event.id} onClick={() => onSelect(event)}>
             <div className={`severity-line ${event.severity}`} />
-            <div className="queue-copy"><div><strong>{event.typeLabel}</strong><StatusPill status={event.status} /></div><span><MapPinned size={13} />{event.pointName}</span><small>{formatAgo(event.createdAt)} · 置信度 {event.confidence}%</small></div>
+            <div className="queue-copy"><div><strong>{event.typeLabel}</strong><StatusPill status={event.status} /></div><span><MapPinned size={13} />{event.pointName}</span><small suppressHydrationWarning>{formatAgo(event.createdAt)} · 置信度 {event.confidence}%</small></div>
             <ArrowRight size={16} />
           </button>
         ))}
@@ -387,7 +388,7 @@ function TrendPanel({ overview }: { overview: Overview }) {
   const max = Math.max(...overview.trends.events, 1);
   return (
     <section className="panel trend-panel">
-      <div className="panel-head"><div><span className="eyebrow">24 小时</span><h2>事件发生趋势</h2></div><button className="chip">今日 <ChevronDown size={13} /></button></div>
+      <div className="panel-head"><div><span className="eyebrow">24 小时</span><h2>事件发生趋势</h2></div><Button className="chip" size="sm" variant="ghost">今日 <ChevronDown size={13} /></Button></div>
       <div className="bar-chart" role="img" aria-label="24 小时事件发生趋势柱状图">
         {overview.trends.events.map((value, index) => <div className="bar-column" key={`${overview.trends.labels[index]}-${index}`}><div className="bar-value">{value}</div><div className="bar-track"><i style={{ height: `${Math.max(12, value / max * 100)}%` }} /></div><span>{overview.trends.labels[index]}:00</span></div>)}
       </div>
@@ -401,13 +402,13 @@ function EventTable({ events, onSelect }: { events: EventItem[]; onSelect: (even
   const filtered = filter === "all" ? events : events.filter((item) => item.status === filter);
   return (
     <section className="panel event-table-panel">
-      <div className="panel-head event-table-head"><div><span className="eyebrow">事件中心</span><h2>最近告警与处置记录</h2></div><div className="table-tools"><label><Search size={15} /><input placeholder="搜索事件或点位" /></label><button className="icon-button"><SlidersHorizontal size={16} /></button></div></div>
+      <div className="panel-head event-table-head"><div><span className="eyebrow">事件中心</span><h2>最近告警与处置记录</h2></div><div className="table-tools"><label><Search size={15} /><input placeholder="搜索事件或点位" /></label><Tooltip><Button className="icon-button" isIconOnly size="sm" variant="ghost" aria-label="筛选事件"><SlidersHorizontal size={16} /></Button><Tooltip.Content>筛选事件</Tooltip.Content></Tooltip></div></div>
       <div className="filter-row">
         {(["all", "active", "dispatched"] as const).map((item) => <button key={item} className={filter === item ? "active" : ""} onClick={() => setFilter(item)}>{({ all: "全部", active: "未接单", dispatched: "处置中" })[item]}</button>)}
       </div>
       <div className="event-table">
         <div className="event-row table-header"><span>事件</span><span>点位</span><span>置信度</span><span>发现时间</span><span>状态</span><span /></div>
-        {filtered.map((event) => <button className="event-row" key={event.id} onClick={() => onSelect(event)}><span><i className={`event-type-icon ${event.severity}`}><AlertTriangle size={15} /></i><b>{event.typeLabel}</b><small>{event.id}</small></span><span><b>{event.pointName}</b><small>{event.address}</small></span><span><b>{event.confidence}%</b><small>YOLOv8</small></span><span><b>{formatAgo(event.createdAt)}</b><small>{new Date(event.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</small></span><span><StatusPill status={event.status} /></span><span><ArrowRight size={16} /></span></button>)}
+        {filtered.map((event) => <button className="event-row" key={event.id} onClick={() => onSelect(event)}><span><i className={`event-type-icon ${event.severity}`}><AlertTriangle size={15} /></i><b>{event.typeLabel}</b><small>{event.id}</small></span><span><b>{event.pointName}</b><small>{event.address}</small></span><span><b>{event.confidence}%</b><small>YOLOv8</small></span><span><b suppressHydrationWarning>{formatAgo(event.createdAt)}</b><small suppressHydrationWarning>{new Date(event.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</small></span><span><StatusPill status={event.status} /></span><span><ArrowRight size={16} /></span></button>)}
       </div>
     </section>
   );
@@ -501,10 +502,16 @@ export function VisionBridgeDashboard() {
     </aside>
     {menuOpen && <button className="mobile-mask" onClick={() => setMenuOpen(false)} aria-label="关闭导航" />}
     <div className="workspace">
-      <header className="topbar"><div className="topbar-left"><button className="mobile-menu" onClick={() => setMenuOpen(true)}><Menu size={19} /></button><span>{currentLabel}</span><i /> <small>城市无障碍设施智能监管</small></div><div className="topbar-right"><span className={`connection-state state-${overview.linkStatus}`}><i />{overview.linkStatus === "online" ? "实时链路正常" : "链路降级"}</span><button className="icon-button" onClick={refresh} aria-label="刷新"><RefreshCw size={16} className={loading ? "spin" : ""} /></button><div className="time-block"><strong>{new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</strong><span>{lastUpdated.toLocaleDateString("zh-CN", { month: "long", day: "numeric", weekday: "short" })}</span></div><div className="avatar">管</div></div></header>
+      <header className="topbar"><div className="topbar-left"><Button className="mobile-menu" isIconOnly size="sm" variant="ghost" onClick={() => setMenuOpen(true)} aria-label="打开导航"><Menu size={19} /></Button><span>{currentLabel}</span><i /> <small>城市无障碍设施智能监管</small></div><div className="topbar-right"><Chip className={`connection-state state-${overview.linkStatus}`} size="sm" variant="soft"><i />{overview.linkStatus === "online" ? "实时链路正常" : "链路降级"}</Chip><Tooltip><Button className="icon-button" isIconOnly size="sm" variant="ghost" onClick={refresh} aria-label="刷新数据"><RefreshCw size={16} className={loading ? "spin" : ""} /></Button><Tooltip.Content>刷新数据</Tooltip.Content></Tooltip><div className="time-block"><strong suppressHydrationWarning>{new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</strong><span suppressHydrationWarning>{lastUpdated.toLocaleDateString("zh-CN", { month: "long", day: "numeric", weekday: "short" })}</span></div><Avatar className="avatar" size="sm"><Avatar.Fallback>管</Avatar.Fallback></Avatar></div></header>
       <main>
         {view === "overview" && <>
-          <section className="hero-line"><div><span className="eyebrow">城市盲道智能监管平台</span><h1>让每一次占用，都有迹可循</h1><p>边缘实时识别、位置冻结、云端告警与处置闭环统一呈现。</p></div><div className="source-badges"><span><Radio size={14} />树莓派实机</span><span><Cloud size={14} />自有云接入</span><span className={`mode-${overview.dataMode}`}>{overview.dataMode === "live" ? "实时数据" : overview.dataMode === "hybrid" ? "实机 + 历史样例" : "演示数据"}</span></div></section>
+          <section className="hero-line">
+            <div className="hero-copy"><span className="eyebrow">城市盲道智能监管平台</span><h1>城市盲道通行态势</h1><p>从边缘识别到现场处置，持续追踪每一处影响安全通行的占用。</p></div>
+            <div className="hero-signal">
+              <div className="signal-orbit" aria-hidden="true"><i className="orbit-ring ring-one" /><i className="orbit-ring ring-two" /><span className="orbit-dot dot-one" /><span className="orbit-dot dot-two" /><span className="orbit-dot dot-three" /><div className="hero-signal-count"><span>当前需处置</span><strong>{overview.kpis.activeEvents}<small>起</small></strong></div></div>
+              <div className="source-badges"><span><Radio size={14} />树莓派实机</span><span><Cloud size={14} />自有云接入</span><span className={`mode-${overview.dataMode}`}>{overview.dataMode === "live" ? "实时数据" : overview.dataMode === "hybrid" ? "实机 + 历史样例" : "演示数据"}</span></div>
+            </div>
+          </section>
           <section className="metric-grid"><MetricCard icon={Signal} label="在线终端" value={`${overview.kpis.onlineDevices}/${overview.kpis.totalDevices}`} detail="边缘链路稳定" tone="cyan" /><MetricCard icon={AlertTriangle} label="活动事件" value={overview.kpis.activeEvents} detail="需要关注与处置" tone="orange" /><MetricCard icon={Activity} label="今日事件" value={overview.kpis.todayEvents} detail="较昨日 +12.5%" tone="blue" /><MetricCard icon={ShieldCheck} label="闭环率" value={overview.kpis.closureRate} suffix="%" detail={`平均响应 ${overview.kpis.averageResponseMin} 分钟`} tone="green" /></section>
           <div className="primary-grid"><MapStage config={config} overview={overview} onEvent={setSelectedEvent} /><div className="right-stack"><DeviceHealth device={overview.device} /><EventQueue events={overview.recentEvents} onSelect={setSelectedEvent} /></div></div>
           <div className="secondary-grid"><TrendPanel overview={overview} /><section className="panel insight-panel"><div className="panel-head"><div><span className="eyebrow">风险洞察</span><h2>事件类型构成</h2></div><CircleGauge size={20} /></div><div className="donut-wrap"><div className="css-donut"><div><strong>24</strong><span>本周事件</span></div></div><div className="legend-list"><span><i className="risk-a" /><b>非机动车</b><strong>46%</strong></span><span><i className="risk-b" /><b>施工杂物</b><strong>33%</strong></span><span><i className="risk-c" /><b>两轮机动车</b><strong>21%</strong></span></div></div><div className="insight-note"><TriangleAlert size={15} /><span>18:00–20:00 为高发时段，建议增加巡检频次。</span></div></section></div>
