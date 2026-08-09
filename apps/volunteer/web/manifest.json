@@ -1,11 +1,11 @@
 {
-    "name": "visionbridge_volunteer",
-    "short_name": "visionbridge_volunteer",
+    "name": "视桥志愿者",
+    "short_name": "视桥",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#EAF4F4",
+    "theme_color": "#119C94",
+    "description": "视桥城市盲道志愿者协同平台",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

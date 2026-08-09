@@ -1,4 +1,4 @@
-import { cp, mkdir, writeFile } from "node:fs/promises";
+import { cp, mkdir, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -7,6 +7,7 @@ const clientRoot = resolve(projectRoot, "dist", "client");
 const outputRoot = resolve(projectRoot, "static-deploy");
 const workerPath = resolve(projectRoot, "dist", "server", "index.js");
 
+await rm(outputRoot, { force: true, recursive: true });
 await mkdir(outputRoot, { recursive: true });
 await cp(clientRoot, outputRoot, { recursive: true, force: true });
 

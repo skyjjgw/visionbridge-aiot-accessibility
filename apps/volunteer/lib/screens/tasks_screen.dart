@@ -302,7 +302,7 @@ class _TaskSheetState extends State<_TaskSheet> {
                     Container(
                         padding: const EdgeInsets.all(13),
                         decoration: BoxDecoration(
-                            color: Colors.orange.withOpacity(.09),
+                            color: Colors.orange.withValues(alpha: .09),
                             borderRadius: BorderRadius.circular(13)),
                         child: const Row(
                             crossAxisAlignment: CrossAxisAlignment.start,
@@ -343,7 +343,7 @@ class _TaskSheetState extends State<_TaskSheet> {
                                     context: context,
                                     builder: (context) => _CompleteTaskDialog(
                                         api: widget.api, task: task));
-                                if (completed == true && mounted) {
+                                if (completed == true && context.mounted) {
                                   Navigator.pop(context);
                                 }
                               },
@@ -507,7 +507,7 @@ class _StatusBadge extends StatelessWidget {
     return Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
         decoration: BoxDecoration(
-            color: color.withOpacity(.1),
+            color: color.withValues(alpha: .1),
             borderRadius: BorderRadius.circular(7)),
         child: Text(text,
             style: TextStyle(

@@ -93,7 +93,7 @@ visionbridge-aiot-accessibility/
 
 - Node.js `>=22.13` 与 npm；
 - Python `>=3.11`；
-- Flutter stable，Dart `>=3.2.6 <4.0.0`；
+- Flutter `3.44.9`，Dart `>=3.2.6 <4.0.0`；
 - 边缘端另需 Linux、OpenCV、ONNX Runtime/OpenCV DNN、FFmpeg、串口与摄像头权限。
 
 ### 1. 启动 API
@@ -118,6 +118,9 @@ npm run dev
 ```
 
 前端开发服务器需要把 `/api` 请求代理到 `http://127.0.0.1:8000`，或使用生产构建由 Nginx 同源托管。
+
+验证生产静态构建时执行 `npm start`。该命令会先重新生成
+`static-deploy`，再启动只读静态服务器；正式环境仍由 Nginx 托管该目录。
 
 ### 3. 运行志愿者 App
 
@@ -168,6 +171,7 @@ npm run lint
 npm test
 
 # API（从仓库根目录运行）
+pip install -r services/api/requirements-dev.txt
 python -m pytest services/api/test_volunteer_api.py
 
 # Flutter

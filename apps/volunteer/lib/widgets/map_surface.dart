@@ -239,7 +239,7 @@ class _MapSurfaceState extends State<MapSurface> {
           child: IgnorePointer(
             child: DecoratedBox(
               decoration: BoxDecoration(
-                color: AppTheme.ink.withOpacity(.88),
+                color: AppTheme.ink.withValues(alpha: .88),
                 borderRadius: BorderRadius.circular(12),
               ),
               child: const Padding(
@@ -391,7 +391,7 @@ class _FallbackMap extends StatelessWidget {
               Expanded(
                 child: DecoratedBox(
                   decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(.94),
+                    color: Colors.white.withValues(alpha: .94),
                     borderRadius: BorderRadius.circular(10),
                   ),
                   child: Padding(

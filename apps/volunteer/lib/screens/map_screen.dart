@@ -347,7 +347,7 @@ class _MapScreenState extends State<MapScreen> {
         if (error.isNotEmpty)
           Container(
             width: double.infinity,
-            color: Colors.redAccent.withOpacity(.08),
+            color: Colors.redAccent.withValues(alpha: .08),
             padding: const EdgeInsets.all(10),
             child: Text(error,
                 textAlign: TextAlign.center,
@@ -384,7 +384,7 @@ class _MapScreenState extends State<MapScreen> {
                       width: 38,
                       height: 38,
                       decoration: BoxDecoration(
-                        color: AppTheme.teal.withOpacity(.1),
+                        color: AppTheme.teal.withValues(alpha: .1),
                         borderRadius: BorderRadius.circular(11),
                       ),
                       child: Icon(
@@ -480,7 +480,8 @@ class _PriorityBadge extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-          color: color.withOpacity(.1), borderRadius: BorderRadius.circular(7)),
+          color: color.withValues(alpha: .1),
+          borderRadius: BorderRadius.circular(7)),
       child: Text(label,
           style: TextStyle(
               fontSize: 11, color: color, fontWeight: FontWeight.w700)),

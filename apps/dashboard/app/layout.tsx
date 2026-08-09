@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { UIShell } from "./ui-shell";
 
 export const metadata: Metadata = {
   title: "视桥 · 城市盲道智能监管平台",
@@ -15,7 +16,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="zh-CN">
-      <body>{children}</body>
+      <body className="dark"><UIShell>{children}</UIShell></body>
     </html>
   );
 }

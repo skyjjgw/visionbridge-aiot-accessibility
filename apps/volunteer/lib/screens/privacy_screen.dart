@@ -123,7 +123,7 @@ class _PermissionCard extends StatelessWidget {
                 width: 42,
                 height: 42,
                 decoration: BoxDecoration(
-                    color: AppTheme.teal.withOpacity(.08),
+                    color: AppTheme.teal.withValues(alpha: .08),
                     borderRadius: BorderRadius.circular(12)),
                 child: Icon(icon, color: AppTheme.teal)),
             const SizedBox(width: 13),
