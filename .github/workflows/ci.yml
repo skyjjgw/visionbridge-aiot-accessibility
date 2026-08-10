@@ -29,7 +29,7 @@ jobs:
             services/api/requirements-dev.txt
       - run: pip install -r services/api/requirements-dev.txt
         working-directory: ${{ github.workspace }}
-      - run: python -m pytest services/api/test_volunteer_api.py
+      - run: python -m pytest services/api/test_*.py
         working-directory: ${{ github.workspace }}
 
   edge-python:
@@ -41,10 +41,14 @@ jobs:
           python-version: '3.12'
       - run: >-
           python -m py_compile
+          edge/pi-runtime/detection_state.py
           edge/pi-runtime/visionbridge_edge_agent.py
+          services/api/analysis.py
+          services/api/app.py
           edge/pi-runtime/tools/resize_fixed_yolov8_onnx.py
           deploy/scripts/deploy_release.py
           deploy/scripts/deploy_media_stack.py
+      - run: python -m unittest discover -s edge/tests -v
 
   volunteer-app:
     runs-on: ubuntu-latest

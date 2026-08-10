@@ -9,9 +9,9 @@ from pathlib import Path
 TEST_DATA_DIR = Path(tempfile.mkdtemp(prefix="visionbridge-volunteer-test-"))
 os.environ["VISIONBRIDGE_DATA_DIR"] = str(TEST_DATA_DIR)
 os.environ["VISIONBRIDGE_EMAIL_DEBUG"] = "1"
-os.environ["VISIONBRIDGE_SEED_DEMO_DATA"] = "0"
 os.environ["VISIONBRIDGE_AUTH_SECRET"] = "test-only-auth-secret"
 os.environ["VISIONBRIDGE_MEDIA_PUBLISH_SECRET"] = "test-only-media-secret"
+os.environ["VISIONBRIDGE_INGEST_TOKEN"] = "test-only-ingest-token"
 
 from fastapi.testclient import TestClient
 
@@ -40,6 +40,39 @@ class VolunteerApiFlowTest(unittest.TestCase):
         self.assertEqual(verified.status_code, 200, verified.text)
         return verified.json()["token"]
 
+    def test_edge_event_is_cleaned_deduplicated_and_cleared(self) -> None:
+        event_id = "edge-state-test-1"
+        payload = {
+            "ts": "2026-08-10T17:00:00+08:00",
+            "device": {"device_id": "edge-test-01", "point_name": "test-point"},
+            "runtime": {
+                "last_event_id": event_id,
+                "last_obstacle_type": "construction_obstacle",
+                "last_confidence": 0.89,
+                "triggerStreak": 5,
+                "camera_fps": 8.0,
+                "inference_ms": 320,
+            },
+            "gps": {"lat": 28.629306, "lng": 121.434412, "hdop": 1.2},
+            "iot_properties": {"eventActive": 1, "alertLevelCode": 2},
+        }
+        headers = {"Authorization": "Bearer test-only-ingest-token"}
+        first = self.client.post("/api/v1/telemetry", json=payload, headers=headers)
+        self.assertEqual(first.status_code, 202, first.text)
+        repeated = self.client.post("/api/v1/telemetry", json=payload, headers=headers)
+        self.assertEqual(repeated.status_code, 202, repeated.text)
+        active = self.client.get("/api/v1/events?status=active").json()["items"]
+        matched = [item for item in active if item["analysisSummary"].startswith("test-point")]
+        self.assertEqual(len(matched), 1)
+        self.assertEqual(matched[0]["analysisStatus"], "local_validated")
+        clear_payload = dict(payload)
+        clear_payload["runtime"] = {**payload["runtime"], "event_state": "cleared"}
+        clear_payload["iot_properties"] = {"eventActive": 0}
+        cleared = self.client.post("/api/v1/telemetry", json=clear_payload, headers=headers)
+        self.assertEqual(cleared.status_code, 202, cleared.text)
+        closed = self.client.get("/api/v1/events?status=cleared").json()["items"]
+        self.assertTrue(any(item["id"] == matched[0]["id"] for item in closed))
+
     def test_single_character_nickname_and_friendly_validation(self) -> None:
         token = self.login("short-name@example.com", "李")
         profile = self.client.get(
@@ -54,6 +87,19 @@ class VolunteerApiFlowTest(unittest.TestCase):
         )
         self.assertEqual(invalid.status_code, 422)
         self.assertEqual(invalid.json()["detail"], "请输入邮件中的 6 位验证码")
+
+    def test_overview_and_analysis_status_never_inject_demo_data(self) -> None:
+        overview = self.client.get("/api/v1/overview")
+        self.assertEqual(overview.status_code, 200, overview.text)
+        payload = overview.json()
+        self.assertIn(payload["dataMode"], {"empty", "live"})
+        self.assertNotIn("demo", payload["dataMode"])
+        self.assertGreaterEqual(payload["kpis"]["totalDevices"], 0)
+        self.assertEqual(payload["device"] is None, payload["kpis"]["totalDevices"] == 0)
+        self.assertEqual(len(payload["trends"]["events"]), len(payload["trends"]["labels"]))
+        analysis = self.client.get("/api/v1/admin/analysis/status")
+        self.assertEqual(analysis.status_code, 200, analysis.text)
+        self.assertIn("provider", analysis.json())
 
     def test_media_auth_is_readable_but_publish_is_device_scoped(self) -> None:
         readable = self.client.post(

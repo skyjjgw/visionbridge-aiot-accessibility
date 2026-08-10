@@ -9,6 +9,7 @@ User=visionbridge
 Group=visionbridge
 WorkingDirectory=/opt/visionbridge/server
 EnvironmentFile=/etc/visionbridge/api.env
+EnvironmentFile=-/etc/visionbridge/agent.env
 ExecStart=/usr/bin/python3 -m uvicorn app:app --host 127.0.0.1 --port 8000 --workers 1
 Restart=always
 RestartSec=5

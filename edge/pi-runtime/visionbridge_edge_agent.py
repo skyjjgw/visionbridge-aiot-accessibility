@@ -14,6 +14,7 @@ import urllib.error
 import urllib.request
 import uuid
 
+from detection_state import OccupancyState
 import cv2
 import numpy as np
 import pynmea2
@@ -731,6 +732,17 @@ class BlindOccupancyEdgeApp:
         self.last_event_ts = 0.0
         self.last_heartbeat_ts = 0.0
         self.violation_streak = 0
+        self.active_event = None
+        self.occupancy_state = OccupancyState(
+            window_frames=args.confirm_window_frames,
+            required_hits=args.confirm_required_hits,
+            min_confirm_duration_sec=args.confirm_min_duration_sec,
+            clear_miss_frames=args.clear_miss_frames,
+            clear_duration_sec=args.clear_duration_sec,
+            evidence_interval_sec=args.evidence_interval_sec,
+            cooldown_sec=args.event_cooldown,
+            spatial_dedup_meters=args.spatial_dedup_meters,
+        )
         self.last_runtime = {
             "camera_fps": 0.0,
             "inference_ms": 0,
@@ -741,6 +753,7 @@ class BlindOccupancyEdgeApp:
             "edge_status": "init",
             "alert_level": "normal",
             "last_event_id": "",
+            "event_state": "idle",
             "last_snapshot_name": "",
             "last_obstacle_type": "",
             "last_raw_class_name": "",
@@ -1892,11 +1905,11 @@ class BlindOccupancyEdgeApp:
         }
         return props
 
-    def send_status(self, *, event=None):
+    def send_status(self, *, event=None, include_snapshot=True):
         props = self.build_properties(event=event)
         payload = self.build_status_snapshot()
         payload["iot_properties"] = {key: value["value"] for key, value in props.items()}
-        if event:
+        if event and include_snapshot:
             snapshot_name = pathlib.Path(str(event.get("snapshot_name") or "")).name
             snapshot_path = self.snapshots_dir / snapshot_name
             if snapshot_name and snapshot_path.is_file():
@@ -1945,9 +1958,33 @@ class BlindOccupancyEdgeApp:
                 "last_event_epoch": time.time(),
                 "snapshot_ready": 1,
                 "edge_status": "alert",
+                "event_state": "active",
             }
         )
         self.record_event_history(event)
+        return event
+
+    def refresh_event_evidence(self, frame, detection, event):
+        """Capture a fresh frame for the same incident without duplicating it."""
+        capture_time = iso_ts()
+        snapshot_name = f"{capture_time[:19].replace(':', '').replace('-', '')}_{event['obstacle_type']}_{event['event_id']}_evidence.jpg"
+        cv2.imwrite(str(self.snapshots_dir / snapshot_name), frame)
+        event.update(
+            {
+                "confidence": max(float(event.get("confidence", 0)), float(detection.get("score", 0))),
+                "capture_time": capture_time,
+                "snapshot_name": snapshot_name,
+                "snapshot_url": self.build_snapshot_url(snapshot_name),
+            }
+        )
+        self.last_runtime.update(
+            {
+                "last_snapshot_name": snapshot_name,
+                "last_confidence": event["confidence"],
+                "snapshot_ready": 1,
+                "event_state": "active",
+            }
+        )
         return event
 
     def run(self):
@@ -1996,8 +2033,6 @@ class BlindOccupancyEdgeApp:
                     self.record_gps_sample(gps)
                     self.last_gps_sample_ts = time.time()
                 roi = build_default_roi(frame.shape[1], frame.shape[0])
-                event_candidate = None
-
                 frame_gap_ready = (
                     last_infer_frame_id < 0
                     or frame_id - last_infer_frame_id >= max(self.args.infer_every_n_frames, 1)
@@ -2040,25 +2075,40 @@ class BlindOccupancyEdgeApp:
                     if monitored:
                         self.violation_streak += 1
                         self.last_runtime["alert_level"] = "warning"
-                        event_candidate = monitored[0]
                     else:
-                        self.violation_streak = 0
                         self.last_runtime["alert_level"] = "normal"
                         self.last_runtime["edge_status"] = "running"
-                    self.last_runtime["trigger_streak"] = self.violation_streak
                     if monitored:
                         self.last_runtime["last_raw_class_name"] = monitored[0]["class_name"]
                         self.last_runtime["last_confidence"] = float(monitored[0]["score"])
-                if event_candidate and self.violation_streak >= self.args.trigger_frames:
-                    if time.time() - self.last_event_ts >= self.args.event_cooldown:
-                        event = self.create_event(frame, event_candidate, gps)
-                        self.dispatch_event_workflow(event, gps)
-                        self.send_status(event=event)
+                    lat = gps.get("lat")
+                    lng = gps.get("lng")
+                    location = (float(lat), float(lng)) if lat is not None and lng is not None else None
+                    decision = self.occupancy_state.update(
+                        now=time.time(),
+                        detection=monitored[0] if monitored else None,
+                        location=location,
+                    )
+                    self.violation_streak = self.occupancy_state.hit_count
+                    self.last_runtime["trigger_streak"] = self.violation_streak
+                    if decision.action == "confirmed" and decision.detection:
+                        self.active_event = self.create_event(frame, decision.detection, gps)
+                        self.send_status(event=self.active_event)
                         self.last_event_ts = time.time()
-                        self.violation_streak = 0
+                    elif decision.action == "evidence" and decision.detection and self.active_event:
+                        self.refresh_event_evidence(frame, decision.detection, self.active_event)
+                        self.send_status(event=self.active_event)
+                    elif decision.action == "cleared" and self.active_event:
+                        self.last_runtime.update(
+                            {"event_state": "cleared", "alert_level": "normal", "edge_status": "running"}
+                        )
+                        self.send_status()
+                        self.active_event = None
+                        self.last_runtime["event_state"] = "idle"
                 if time.time() - self.last_heartbeat_ts >= self.args.heartbeat_interval:
-                    self.last_runtime["edge_status"] = "running"
-                    self.send_status()
+                    if not self.active_event:
+                        self.last_runtime["edge_status"] = "running"
+                    self.send_status(event=self.active_event, include_snapshot=False)
 
                 if self.args.preview:
                     annotated = self.annotate_frame(frame)
@@ -2089,8 +2139,14 @@ def parse_args():
     parser.add_argument("--device-source", default=os.environ.get("DEVICE_SOURCE", "usb_camera+lc76g"))
     parser.add_argument("--gps-coord-system", default=os.environ.get("GPS_COORD_SYSTEM", "gcj02"))
     parser.add_argument("--heartbeat-interval", type=int, default=20)
-    parser.add_argument("--event-cooldown", type=int, default=15)
-    parser.add_argument("--trigger-frames", type=int, default=3)
+    parser.add_argument("--event-cooldown", type=float, default=float(os.environ.get("EVENT_COOLDOWN_SEC", "20")))
+    parser.add_argument("--confirm-window-frames", type=int, default=int(os.environ.get("CONFIRM_WINDOW_FRAMES", "8")))
+    parser.add_argument("--confirm-required-hits", type=int, default=int(os.environ.get("CONFIRM_REQUIRED_HITS", "5")))
+    parser.add_argument("--confirm-min-duration-sec", type=float, default=float(os.environ.get("CONFIRM_MIN_DURATION_SEC", "2")))
+    parser.add_argument("--clear-miss-frames", type=int, default=int(os.environ.get("CLEAR_MISS_FRAMES", "5")))
+    parser.add_argument("--clear-duration-sec", type=float, default=float(os.environ.get("CLEAR_DURATION_SEC", "3")))
+    parser.add_argument("--evidence-interval-sec", type=float, default=float(os.environ.get("EVIDENCE_INTERVAL_SEC", "30")))
+    parser.add_argument("--spatial-dedup-meters", type=float, default=float(os.environ.get("SPATIAL_DEDUP_METERS", "15")))
     parser.add_argument("--infer-every-n-frames", type=int, default=2)
     parser.add_argument("--infer-interval-sec", type=float, default=float(os.environ.get("INFER_INTERVAL_SEC", "0.8")))
     parser.add_argument("--input-size", type=int, default=int(os.environ.get("INPUT_SIZE", "320")))

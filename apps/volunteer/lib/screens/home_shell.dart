@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../api_client.dart';
 import '../app_theme.dart';
 import '../models.dart';
+import '../realtime_service.dart';
 import 'map_screen.dart';
 import 'profile_screen.dart';
 import 'report_screen.dart';
@@ -25,12 +26,16 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
   int taskRevision = 0;
   int profileRevision = 0;
   Timer? refreshTimer;
+  late final RealtimeService realtime;
+  StreamSubscription<String>? realtimeSubscription;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    refreshTimer = Timer.periodic(const Duration(seconds: 6), (_) {
+    realtime = RealtimeService(widget.api)..start();
+    realtimeSubscription = realtime.events.listen((_) => _refreshActivePage());
+    refreshTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       if (!mounted) return;
       _refreshActivePage();
     });
@@ -53,6 +58,8 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
   @override
   void dispose() {
     refreshTimer?.cancel();
+    realtimeSubscription?.cancel();
+    realtime.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }

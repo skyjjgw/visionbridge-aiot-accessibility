@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Device } from "./vision-bridge-dashboard";
+import { useRealtimeRefresh } from "./use-realtime-refresh";
 
 type DeviceResponse = { items: Device[]; count: number; generatedAt: string };
 type PlayerMode = "webrtc" | "hls";
@@ -41,9 +42,9 @@ function streamLabel(device: Device): string {
   return device.status === "online" ? "视频待接入" : "设备离线";
 }
 
-export function DeviceFleetView({ fallbackDevice }: { fallbackDevice: Device }) {
-  const [devices, setDevices] = useState<Device[]>([fallbackDevice]);
-  const [selectedId, setSelectedId] = useState(fallbackDevice.id);
+export function DeviceFleetView({ fallbackDevice }: { fallbackDevice: Device | null }) {
+  const [devices, setDevices] = useState<Device[]>(fallbackDevice ? [fallbackDevice] : []);
+  const [selectedId, setSelectedId] = useState(fallbackDevice?.id ?? "");
   const [mode, setMode] = useState<PlayerMode>("webrtc");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -56,9 +57,9 @@ export function DeviceFleetView({ fallbackDevice }: { fallbackDevice: Device }) 
     try {
       const result = await fetchDevices();
       if (current !== sequence.current) return;
-      const next = result.items.length > 0 ? result.items : [fallbackDevice];
+      const next = result.items;
       setDevices(next);
-      setSelectedId((selected) => next.some((item) => item.id === selected) ? selected : next[0].id);
+      setSelectedId((selected) => next.some((item) => item.id === selected) ? selected : next[0]?.id ?? "");
       setError("");
       setRefreshedAt(new Date());
     } catch (reason) {
@@ -67,11 +68,11 @@ export function DeviceFleetView({ fallbackDevice }: { fallbackDevice: Device }) 
     } finally {
       if (current === sequence.current) setLoading(false);
     }
-  }, [fallbackDevice]);
+  }, []);
 
   useEffect(() => {
     const initial = window.setTimeout(() => void refresh(), 0);
-    const timer = window.setInterval(() => void refresh(), 3000);
+    const timer = window.setInterval(() => void refresh(), 30000);
     const resume = () => { if (document.visibilityState === "visible") void refresh(); };
     document.addEventListener("visibilitychange", resume);
     window.addEventListener("focus", resume);
@@ -82,6 +83,7 @@ export function DeviceFleetView({ fallbackDevice }: { fallbackDevice: Device }) 
       window.removeEventListener("focus", resume);
     };
   }, [refresh]);
+  useRealtimeRefresh(refresh);
 
   const selected = useMemo(
     () => devices.find((item) => item.id === selectedId) ?? devices[0] ?? fallbackDevice,
@@ -89,7 +91,7 @@ export function DeviceFleetView({ fallbackDevice }: { fallbackDevice: Device }) 
   );
   const onlineCount = devices.filter((item) => item.status === "online").length;
   const streamCount = devices.filter((item) => item.streamStatus === "live").length;
-  const playerUrl = mode === "webrtc" ? selected.webRtcUrl : selected.hlsUrl;
+  const playerUrl = selected ? (mode === "webrtc" ? selected.webRtcUrl : selected.hlsUrl) : "";
   const playerSrc = `${playerUrl}?controls=true&muted=true&autoplay=true&playsinline=true&v=${playerKey}`;
 
   const selectDevice = (device: Device) => {
@@ -97,6 +99,8 @@ export function DeviceFleetView({ fallbackDevice }: { fallbackDevice: Device }) 
     setMode("webrtc");
     setPlayerKey((value) => value + 1);
   };
+
+  if (!selected) return <div className="subpage device-fleet-page"><div className="subpage-head"><div><span className="eyebrow">EDGE FLEET</span><h1>边缘设备</h1><p>从设备列表进入实时识别画面，统一查看 GNSS、推理性能与视频链路。</p></div></div>{error && <Alert className="fleet-error" status="warning"><Alert.Indicator /><Alert.Content><Alert.Title>设备数据暂不可用</Alert.Title><Alert.Description>{error}</Alert.Description></Alert.Content></Alert>}<section className="panel stream-detail-panel"><div className="stream-empty"><VideoOff size={34} /><strong>尚无边缘设备上报</strong><span>设备首次心跳到达后会自动出现在这里，不使用虚拟设备占位。</span><Button onPress={() => void refresh()} isPending={loading}>重新检查</Button></div></section></div>;
 
   return <div className="subpage device-fleet-page">
     <div className="subpage-head">

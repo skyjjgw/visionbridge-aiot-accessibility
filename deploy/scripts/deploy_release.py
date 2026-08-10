@@ -82,7 +82,7 @@ echo "{digest}  $ARCHIVE" | sha256sum -c -
 [ ! -e "$RELEASE" ]
 mkdir -p "$RELEASE" "$BACKUP"
 tar -xzf "$ARCHIVE" -C "$RELEASE"
-python3 -m py_compile "$RELEASE/services/api/app.py"
+python3 -m py_compile "$RELEASE/services/api/app.py" "$RELEASE/services/api/analysis.py"
 test -s "$RELEASE/apps/dashboard/static-deploy/index.html"
 test -s "$RELEASE/apps/volunteer/build/web/main.dart.js"
 test -s "$RELEASE/deploy/nginx/visionbridge.conf"
@@ -107,6 +107,8 @@ mv "/opt/visionbridge/server.next-$STAMP" /opt/visionbridge/server
 mv "/opt/visionbridge/static-deploy.next-$STAMP" /opt/visionbridge/static-deploy
 mv "/opt/visionbridge/volunteer.next-$STAMP" /opt/visionbridge/volunteer
 cp -a "$RELEASE/deploy/nginx/visionbridge.conf" "$NGINX"
+cp -a "$RELEASE/deploy/systemd/visionbridge-api.service" /etc/systemd/system/visionbridge-api.service
+systemctl daemon-reload
 SWAPPED=1
 
 nginx -t

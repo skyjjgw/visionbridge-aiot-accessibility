@@ -5,6 +5,7 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
 import secrets
@@ -12,6 +13,7 @@ import smtplib
 import sqlite3
 import ssl
 import threading
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -27,6 +29,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+try:
+    from .analysis import AnalysisDecision, AnalysisProviderConfig, ExternalAnalysisClient, local_quality_analysis
+except ImportError:  # Production release imports app.py as a top-level module.
+    from analysis import AnalysisDecision, AnalysisProviderConfig, ExternalAnalysisClient, local_quality_analysis
+
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("VISIONBRIDGE_DATA_DIR", BASE_DIR / "data"))
@@ -35,7 +42,6 @@ SNAPSHOT_DIR = DATA_DIR / "snapshots"
 VOLUNTEER_UPLOAD_DIR = DATA_DIR / "volunteer_uploads"
 INGEST_TOKEN = os.getenv("VISIONBRIDGE_INGEST_TOKEN", "")
 AUTH_SECRET = os.getenv("VISIONBRIDGE_AUTH_SECRET", INGEST_TOKEN or "visionbridge-development-only")
-SEED_DEMO_DATA = os.getenv("VISIONBRIDGE_SEED_DEMO_DATA", "1") == "1"
 DEFAULT_LNG = float(os.getenv("VISIONBRIDGE_DEFAULT_LNG", "121.138923"))
 DEFAULT_LAT = float(os.getenv("VISIONBRIDGE_DEFAULT_LAT", "28.632112"))
 SMTP_HOST = os.getenv("VISIONBRIDGE_SMTP_HOST", "smtp.qq.com")
@@ -51,6 +57,13 @@ AUTH_TOKEN_TTL_DAYS = 30
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 TZ = timezone(timedelta(hours=8))
 DB_LOCK = threading.RLock()
+ANALYSIS_CONFIG = AnalysisProviderConfig.from_env()
+ANALYSIS_CLIENT = ExternalAnalysisClient(ANALYSIS_CONFIG)
+ANALYSIS_STOP = threading.Event()
+ANALYSIS_THREAD: threading.Thread | None = None
+REALTIME_LOCK = threading.Lock()
+REALTIME_VERSION = 0
+REALTIME_EVENT: dict[str, Any] = {"type": "system.ready", "time": ""}
 
 EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 REPORT_CATEGORIES = {
@@ -83,6 +96,23 @@ def parse_time(value: str | None) -> datetime:
         return datetime.now(TZ)
 
 
+def publish_realtime(event_type: str, payload: dict[str, Any] | None = None) -> None:
+    global REALTIME_VERSION, REALTIME_EVENT
+    with REALTIME_LOCK:
+        REALTIME_VERSION += 1
+        REALTIME_EVENT = {
+            "type": event_type,
+            "version": REALTIME_VERSION,
+            "time": now_iso(),
+            "payload": payload or {},
+        }
+
+
+def realtime_snapshot() -> tuple[int, dict[str, Any]]:
+    with REALTIME_LOCK:
+        return REALTIME_VERSION, dict(REALTIME_EVENT)
+
+
 @contextmanager
 def db():
     connection = sqlite3.connect(DB_PATH, timeout=15, check_same_thread=False)
@@ -92,6 +122,12 @@ def db():
         yield connection
     finally:
         connection.close()
+
+
+def ensure_column(connection: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in columns:
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def init_db() -> None:
@@ -240,21 +276,84 @@ def init_db() -> None:
               created_at TEXT NOT NULL,
               FOREIGN KEY(task_id) REFERENCES public_tasks(id)
             );
+            CREATE TABLE IF NOT EXISTS raw_ingest (
+              id TEXT PRIMARY KEY,
+              source TEXT NOT NULL,
+              source_id TEXT NOT NULL,
+              payload_hash TEXT NOT NULL,
+              content_type TEXT NOT NULL DEFAULT 'application/json',
+              payload TEXT NOT NULL,
+              photo_path TEXT,
+              local_decision TEXT NOT NULL,
+              received_at TEXT NOT NULL,
+              UNIQUE(source, source_id),
+              UNIQUE(source, payload_hash)
+            );
+            CREATE INDEX IF NOT EXISTS idx_raw_ingest_time ON raw_ingest(received_at DESC);
+            CREATE TABLE IF NOT EXISTS analysis_jobs (
+              id TEXT PRIMARY KEY,
+              raw_ingest_id TEXT NOT NULL UNIQUE,
+              provider TEXT NOT NULL,
+              status TEXT NOT NULL,
+              attempts INTEGER NOT NULL DEFAULT 0,
+              next_attempt_at TEXT NOT NULL,
+              last_error TEXT NOT NULL DEFAULT '',
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              FOREIGN KEY(raw_ingest_id) REFERENCES raw_ingest(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_analysis_jobs_status ON analysis_jobs(status, next_attempt_at);
+            CREATE TABLE IF NOT EXISTS analysis_results (
+              id TEXT PRIMARY KEY,
+              job_id TEXT NOT NULL UNIQUE,
+              raw_ingest_id TEXT NOT NULL,
+              provider TEXT NOT NULL,
+              workflow_run_id TEXT NOT NULL DEFAULT '',
+              valid INTEGER NOT NULL,
+              canonical_category TEXT NOT NULL,
+              priority TEXT NOT NULL,
+              quality_score REAL NOT NULL,
+              duplicate_risk REAL NOT NULL,
+              needs_manual_review INTEGER NOT NULL,
+              summary TEXT NOT NULL,
+              quality_flags TEXT NOT NULL,
+              raw_output TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              FOREIGN KEY(job_id) REFERENCES analysis_jobs(id),
+              FOREIGN KEY(raw_ingest_id) REFERENCES raw_ingest(id)
+            );
+            CREATE TABLE IF NOT EXISTS data_quality_flags (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              raw_ingest_id TEXT NOT NULL,
+              code TEXT NOT NULL,
+              severity TEXT NOT NULL,
+              message TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              UNIQUE(raw_ingest_id, code),
+              FOREIGN KEY(raw_ingest_id) REFERENCES raw_ingest(id)
+            );
+            CREATE TABLE IF NOT EXISTS audit_log (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              entity_type TEXT NOT NULL,
+              entity_id TEXT NOT NULL,
+              actor TEXT NOT NULL,
+              action TEXT NOT NULL,
+              detail TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_log(entity_type, entity_id, created_at DESC);
             """
         )
-        if SEED_DEMO_DATA and connection.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0:
-            now = datetime.now(TZ)
-            samples = [
-                ("VB-DEMO-006", "construction_obstacle", "施工杂物占用", "active", "critical", 91, "学院路东侧盲道", "学院路与求知路交叉口东南侧", DEFAULT_LAT + .00025, DEFAULT_LNG + .00029, now - timedelta(minutes=7), 428),
-                ("VB-DEMO-005", "non_motor_vehicle", "非机动车占用", "dispatched", "warning", 87, "博学路北段", "博学路公交站向北 120 米", DEFAULT_LAT - .00037, DEFAULT_LNG - .00050, now - timedelta(minutes=31), 1280),
-                ("VB-DEMO-004", "motor_vehicle", "两轮机动车占用", "cleared", "warning", 84, "求知路西侧盲道", "求知路 18 号门前", DEFAULT_LAT + .00057, DEFAULT_LNG - .00103, now - timedelta(minutes=83), 620),
-            ]
-            for item in samples:
-                event_id, event_type, label, status, severity, confidence, point, address, lat, lng, created, duration = item
-                connection.execute(
-                    "INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (event_id, None, "demo-device", event_type, label, status, severity, confidence, point, address, lat, lng, None, "历史演示样例", created.isoformat(timespec="seconds"), now.isoformat(timespec="seconds"), duration),
-                )
+        ensure_column(connection, "events", "analysis_status", "TEXT NOT NULL DEFAULT 'local_validated'")
+        ensure_column(connection, "events", "quality_score", "REAL")
+        ensure_column(connection, "events", "analysis_summary", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(connection, "events", "analysis_provider", "TEXT NOT NULL DEFAULT 'local'")
+        ensure_column(connection, "volunteer_reports", "analysis_status", "TEXT NOT NULL DEFAULT 'local_validated'")
+        ensure_column(connection, "volunteer_reports", "quality_score", "REAL")
+        ensure_column(connection, "volunteer_reports", "analysis_summary", "TEXT NOT NULL DEFAULT ''")
+        connection.execute("DELETE FROM events WHERE source='历史演示样例' OR id LIKE 'VB-DEMO-%'")
+        backfill_analysis_records(connection)
+        sync_analysis_results(connection)
         connection.commit()
 
 
@@ -288,6 +387,307 @@ def normalize_email(value: str) -> str:
 
 def digest_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def haversine_meters(lat_a: float, lng_a: float, lat_b: float, lng_b: float) -> float:
+    radius = 6_371_000.0
+    phi_a, phi_b = math.radians(lat_a), math.radians(lat_b)
+    d_phi = math.radians(lat_b - lat_a)
+    d_lng = math.radians(lng_b - lng_a)
+    value = math.sin(d_phi / 2) ** 2 + math.cos(phi_a) * math.cos(phi_b) * math.sin(d_lng / 2) ** 2
+    return 2 * radius * math.atan2(math.sqrt(value), math.sqrt(max(0.0, 1 - value)))
+
+
+def audit(
+    connection: sqlite3.Connection,
+    entity_type: str,
+    entity_id: str,
+    action: str,
+    detail: dict[str, Any] | str | None = None,
+    actor: str = "system",
+) -> None:
+    serialized = detail if isinstance(detail, str) else json.dumps(detail or {}, ensure_ascii=False, separators=(",", ":"))
+    connection.execute(
+        "INSERT INTO audit_log(entity_type,entity_id,actor,action,detail,created_at) VALUES(?,?,?,?,?,?)",
+        (entity_type, entity_id, actor, action, serialized, now_iso()),
+    )
+
+
+def recent_duplicate_risk(connection: sqlite3.Connection, inputs: dict[str, Any]) -> float:
+    try:
+        lat, lng = float(inputs.get("lat")), float(inputs.get("lng"))
+    except (TypeError, ValueError):
+        return 0.0
+    category = str(inputs.get("category") or "")
+    cutoff = (datetime.now(TZ) - timedelta(minutes=30)).isoformat(timespec="seconds")
+    rows = connection.execute(
+        "SELECT payload FROM raw_ingest WHERE received_at>=? ORDER BY received_at DESC LIMIT 100",
+        (cutoff,),
+    ).fetchall()
+    closest = 10_000.0
+    for row in rows:
+        try:
+            previous = json.loads(row["payload"]).get("analysisInput") or {}
+            if str(previous.get("category") or "") != category:
+                continue
+            distance = haversine_meters(lat, lng, float(previous.get("lat")), float(previous.get("lng")))
+            closest = min(closest, distance)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+    if closest <= 10:
+        return 0.95
+    if closest <= 20:
+        return 0.8
+    if closest <= 50:
+        return 0.45
+    return 0.0
+
+
+def register_raw_ingest(
+    connection: sqlite3.Connection,
+    *,
+    source: Literal["edge", "volunteer"],
+    source_id: str,
+    analysis_input: dict[str, Any],
+    content_type: str = "application/json",
+    photo_path: str | None = None,
+    photo_sha256: str = "",
+) -> tuple[str, AnalysisDecision, bool]:
+    normalized = dict(analysis_input)
+    normalized["source"] = source
+    normalized["sourceId"] = source_id
+    normalized["duplicateRisk"] = recent_duplicate_risk(connection, normalized)
+    envelope = {"analysisInput": normalized, "photoSha256": photo_sha256}
+    canonical = json.dumps(envelope, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    payload_hash = digest_text(canonical)
+    decision = local_quality_analysis(normalized)
+    raw_id = f"RAW-{uuid.uuid4().hex[:16].upper()}"
+    timestamp = now_iso()
+    inserted = connection.execute(
+        "INSERT OR IGNORE INTO raw_ingest(id,source,source_id,payload_hash,content_type,payload,photo_path,local_decision,received_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?)",
+        (
+            raw_id,
+            source,
+            source_id,
+            payload_hash,
+            content_type,
+            canonical,
+            photo_path,
+            json.dumps(decision.as_dict(), ensure_ascii=False, separators=(",", ":")),
+            timestamp,
+        ),
+    ).rowcount
+    if not inserted:
+        existing = connection.execute(
+            "SELECT id,local_decision FROM raw_ingest WHERE (source=? AND source_id=?) OR (source=? AND payload_hash=?) LIMIT 1",
+            (source, source_id, source, payload_hash),
+        ).fetchone()
+        if existing is None:
+            raise RuntimeError("raw ingest deduplication failed")
+        return existing["id"], AnalysisDecision.from_data(json.loads(existing["local_decision"])), True
+
+    messages = {
+        "unknown_category": "障碍类别不在标准字典中",
+        "description_too_short": "描述过短，建议人工补充",
+        "invalid_coordinates": "坐标超出合法范围",
+        "missing_coordinates": "缺少有效坐标",
+        "low_model_confidence": "边缘模型置信度偏低",
+        "probable_duplicate": "相近时间与位置存在同类上报",
+    }
+    for code in decision.quality_flags:
+        connection.execute(
+            "INSERT OR IGNORE INTO data_quality_flags(raw_ingest_id,code,severity,message,created_at) VALUES(?,?,?,?,?)",
+            (raw_id, code, "warning" if code not in {"invalid_coordinates", "missing_coordinates"} else "error", messages.get(code, code), timestamp),
+        )
+    job_id = f"AN-{uuid.uuid4().hex[:14].upper()}"
+    job_status = "queued" if ANALYSIS_CONFIG.enabled else "pending_config"
+    connection.execute(
+        "INSERT INTO analysis_jobs(id,raw_ingest_id,provider,status,attempts,next_attempt_at,last_error,created_at,updated_at) "
+        "VALUES(?,?,?,?,0,?,'',?,?)",
+        (job_id, raw_id, ANALYSIS_CONFIG.mode, job_status, timestamp, timestamp, timestamp),
+    )
+    audit(connection, "raw_ingest", raw_id, "accepted", {"source": source, "sourceId": source_id, "quality": decision.quality_score})
+    return raw_id, decision, False
+
+
+def backfill_analysis_records(connection: sqlite3.Connection) -> None:
+    """Queue real pre-migration records exactly once without inventing data."""
+    reports = connection.execute(
+        "SELECT r.* FROM volunteer_reports r LEFT JOIN raw_ingest raw "
+        "ON raw.source='volunteer' AND raw.source_id=r.id "
+        "WHERE r.status<>'deleted' AND raw.id IS NULL"
+    ).fetchall()
+    for report in reports:
+        _, decision, _ = register_raw_ingest(
+            connection,
+            source="volunteer",
+            source_id=report["id"],
+            analysis_input={
+                "category": report["category"],
+                "cleanupReason": report["cleanup_reason"],
+                "description": report["description"],
+                "address": report["address"],
+                "lat": report["lat"],
+                "lng": report["lng"],
+                "confidence": 0,
+                "durationSec": 0,
+                "timestamp": report["created_at"],
+                "reporterId": report["reporter_id"],
+                "snapshotUrl": f"/api/v1/admin/reports/{report['id']}/photo",
+                "priority": report["priority"],
+            },
+            content_type="image/unknown",
+            photo_path=report["photo_filename"],
+        )
+        connection.execute(
+            "UPDATE volunteer_reports SET analysis_status=?,quality_score=?,analysis_summary=? WHERE id=?",
+            (
+                "queued" if ANALYSIS_CONFIG.enabled else "local_validated",
+                decision.quality_score,
+                decision.summary,
+                report["id"],
+            ),
+        )
+
+    events = connection.execute(
+        "SELECT e.* FROM events e LEFT JOIN raw_ingest raw "
+        "ON raw.source='edge' AND raw.source_id=e.source_event_id "
+        "WHERE e.device_id<>'volunteer-app' AND e.source_event_id IS NOT NULL "
+        "AND e.source_event_id<>'' AND raw.id IS NULL"
+    ).fetchall()
+    for event in events:
+        _, decision, _ = register_raw_ingest(
+            connection,
+            source="edge",
+            source_id=event["source_event_id"],
+            analysis_input={
+                "category": event["type"],
+                "description": f"{event['point_name']} 历史真实边缘事件回填",
+                "address": event["address"],
+                "lat": event["lat"],
+                "lng": event["lng"],
+                "confidence": event["confidence"],
+                "durationSec": event["duration_sec"],
+                "timestamp": event["created_at"],
+                "deviceId": event["device_id"],
+                "snapshotUrl": event["snapshot_url"] or "",
+            },
+            photo_path=event["snapshot_url"],
+        )
+        connection.execute(
+            "UPDATE events SET analysis_status=?,quality_score=?,analysis_summary=?,analysis_provider='local' WHERE id=?",
+            (
+                "queued" if ANALYSIS_CONFIG.enabled else "local_validated",
+                decision.quality_score,
+                decision.summary,
+                event["id"],
+            ),
+        )
+
+
+def sync_analysis_results(connection: sqlite3.Connection) -> None:
+    rows = connection.execute(
+        "SELECT raw.source,raw.source_id,result.quality_score,result.summary,result.provider "
+        "FROM analysis_results result JOIN raw_ingest raw ON raw.id=result.raw_ingest_id"
+    ).fetchall()
+    for row in rows:
+        if row["source"] == "edge":
+            connection.execute(
+                "UPDATE events SET analysis_status='succeeded',quality_score=?,analysis_summary=?,analysis_provider=? WHERE source_event_id=?",
+                (row["quality_score"], row["summary"], row["provider"], row["source_id"]),
+            )
+        else:
+            connection.execute(
+                "UPDATE volunteer_reports SET analysis_status='succeeded',quality_score=?,analysis_summary=? WHERE id=?",
+                (row["quality_score"], row["summary"], row["source_id"]),
+            )
+            connection.execute(
+                "UPDATE events SET analysis_status='succeeded',quality_score=?,analysis_summary=?,analysis_provider=? WHERE source_event_id=?",
+                (row["quality_score"], row["summary"], row["provider"], row["source_id"]),
+            )
+
+def analysis_worker_loop() -> None:
+    while not ANALYSIS_STOP.wait(1.0):
+        timestamp = now_iso()
+        with DB_LOCK, db() as connection:
+            row = connection.execute(
+                "SELECT j.*,r.source,r.source_id,r.payload FROM analysis_jobs j "
+                "JOIN raw_ingest r ON r.id=j.raw_ingest_id "
+                "WHERE j.status IN ('queued','retry') AND j.next_attempt_at<=? ORDER BY j.created_at LIMIT 1",
+                (timestamp,),
+            ).fetchone()
+            if row is None:
+                continue
+            connection.execute(
+                "UPDATE analysis_jobs SET status='running',attempts=attempts+1,updated_at=? WHERE id=?",
+                (timestamp, row["id"]),
+            )
+            connection.commit()
+        try:
+            payload = json.loads(row["payload"])
+            decision, run_id, raw_output = ANALYSIS_CLIENT.run(payload["analysisInput"])
+            completed = now_iso()
+            with DB_LOCK, db() as connection:
+                connection.execute(
+                    "INSERT OR REPLACE INTO analysis_results(id,job_id,raw_ingest_id,provider,workflow_run_id,valid,canonical_category,priority,quality_score,duplicate_risk,needs_manual_review,summary,quality_flags,raw_output,created_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        f"AR-{uuid.uuid4().hex[:14].upper()}", row["id"], row["raw_ingest_id"], ANALYSIS_CONFIG.mode,
+                        run_id, int(decision.valid), decision.canonical_category, decision.priority,
+                        decision.quality_score, decision.duplicate_risk, int(decision.needs_manual_review), decision.summary,
+                        json.dumps(decision.quality_flags, ensure_ascii=False),
+                        json.dumps(raw_output, ensure_ascii=False, separators=(",", ":")), completed,
+                    ),
+                )
+                connection.execute(
+                    "UPDATE analysis_jobs SET status='succeeded',last_error='',updated_at=? WHERE id=?",
+                    (completed, row["id"]),
+                )
+                if row["source"] == "edge":
+                    connection.execute(
+                        "UPDATE events SET analysis_status='succeeded',quality_score=?,analysis_summary=?,analysis_provider=? WHERE source_event_id=?",
+                        (decision.quality_score, decision.summary, ANALYSIS_CONFIG.mode, row["source_id"]),
+                    )
+                else:
+                    connection.execute(
+                        "UPDATE volunteer_reports SET analysis_status='succeeded',quality_score=?,analysis_summary=? WHERE id=?",
+                        (decision.quality_score, decision.summary, row["source_id"]),
+                    )
+                    connection.execute(
+                        "UPDATE events SET analysis_status='succeeded',quality_score=?,analysis_summary=?,analysis_provider=? WHERE source_event_id=?",
+                        (decision.quality_score, decision.summary, ANALYSIS_CONFIG.mode, row["source_id"]),
+                    )
+                audit(connection, "analysis_job", row["id"], "succeeded", {"runId": run_id, "provider": ANALYSIS_CONFIG.mode})
+                connection.commit()
+            publish_realtime("analysis.completed", {"source": row["source"], "sourceId": row["source_id"]})
+        except Exception as exc:
+            attempts = int(row["attempts"]) + 1
+            retry = attempts < 5
+            delay = min(300, 2 ** attempts * 5)
+            next_attempt = (datetime.now(TZ) + timedelta(seconds=delay)).isoformat(timespec="seconds")
+            with DB_LOCK, db() as connection:
+                connection.execute(
+                    "UPDATE analysis_jobs SET status=?,next_attempt_at=?,last_error=?,updated_at=? WHERE id=?",
+                    ("retry" if retry else "failed", next_attempt, str(exc)[:1000], now_iso(), row["id"]),
+                )
+                audit(connection, "analysis_job", row["id"], "retry" if retry else "failed", {"error": str(exc)[:500]})
+                connection.commit()
+
+
+def start_analysis_worker() -> None:
+    global ANALYSIS_THREAD
+    ANALYSIS_STOP.clear()
+    if not ANALYSIS_CONFIG.enabled:
+        return
+    ANALYSIS_THREAD = threading.Thread(target=analysis_worker_loop, name="visionbridge-analysis", daemon=True)
+    ANALYSIS_THREAD.start()
+
+
+def stop_analysis_worker() -> None:
+    ANALYSIS_STOP.set()
+    if ANALYSIS_THREAD:
+        ANALYSIS_THREAD.join(timeout=3)
 
 
 def verification_digest(email: str, purpose: str, code: str) -> str:
@@ -374,6 +774,9 @@ def report_payload(row: sqlite3.Row, photo_scope: str = "volunteer") -> dict[str
         "priority": row["priority"],
         "reviewNote": row["review_note"],
         "obstacleId": row["obstacle_id"],
+        "analysisStatus": row["analysis_status"] if "analysis_status" in row.keys() else "local_validated",
+        "qualityScore": row["quality_score"] if "quality_score" in row.keys() else None,
+        "analysisSummary": row["analysis_summary"] if "analysis_summary" in row.keys() else "",
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
     }
@@ -465,6 +868,10 @@ def row_to_event(row: sqlite3.Row) -> dict[str, Any]:
         "source": row["source"],
         "createdAt": row["created_at"],
         "durationSec": row["duration_sec"],
+        "analysisStatus": row["analysis_status"] if "analysis_status" in row.keys() else "local_validated",
+        "qualityScore": row["quality_score"] if "quality_score" in row.keys() else None,
+        "analysisSummary": row["analysis_summary"] if "analysis_summary" in row.keys() else "",
+        "analysisProvider": row["analysis_provider"] if "analysis_provider" in row.keys() else "local",
     }
 
 
@@ -590,7 +997,12 @@ class MediaAuthRequest(BaseModel):
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
-    yield
+    start_analysis_worker()
+    publish_realtime("system.started", {"analysisProvider": ANALYSIS_CONFIG.mode})
+    try:
+        yield
+    finally:
+        stop_analysis_worker()
 
 
 app = FastAPI(title="VisionBridge Cloud API", version="1.0.0", lifespan=lifespan)
@@ -598,7 +1010,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[origin.strip() for origin in os.getenv("VISIONBRIDGE_CORS_ORIGINS", "*").split(",")],
     allow_credentials=False,
-    allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
 
@@ -620,7 +1032,20 @@ async def validation_error_handler(_, exc: RequestValidationError) -> JSONRespon
 
 @app.get("/api/v1/health")
 def health() -> dict[str, Any]:
-    return {"status": "ok", "service": "visionbridge-api", "time": now_iso()}
+    with DB_LOCK, db() as connection:
+        pending = connection.execute(
+            "SELECT COUNT(*) FROM analysis_jobs WHERE status IN ('queued','retry','running','pending_config')"
+        ).fetchone()[0]
+    return {
+        "status": "ok",
+        "service": "visionbridge-api",
+        "time": now_iso(),
+        "analysis": {
+            "provider": ANALYSIS_CONFIG.mode,
+            "configured": ANALYSIS_CONFIG.enabled,
+            "pending": pending,
+        },
+    }
 
 
 @app.post("/api/v1/media/auth")
@@ -798,8 +1223,40 @@ async def create_volunteer_report(
             "VALUES(?,?,?,?,?,?,?,?,?,'pending','normal',?,?)",
             (report_id, user["id"], category, cleanup_reason, description, address.strip() or "志愿者现场上报点位", lat, lng, filename, timestamp, timestamp),
         )
+        _, decision, _ = register_raw_ingest(
+            connection,
+            source="volunteer",
+            source_id=report_id,
+            analysis_input={
+                "category": category,
+                "cleanupReason": cleanup_reason,
+                "description": description,
+                "address": address.strip(),
+                "lat": lat,
+                "lng": lng,
+                "confidence": 0,
+                "durationSec": 0,
+                "timestamp": timestamp,
+                "reporterId": user["id"],
+                "snapshotUrl": f"/api/v1/admin/reports/{report_id}/photo",
+            },
+            content_type=photo.content_type or "application/octet-stream",
+            photo_path=filename,
+            photo_sha256=hashlib.sha256(content).hexdigest(),
+        )
+        connection.execute(
+            "UPDATE volunteer_reports SET analysis_status=?,quality_score=?,analysis_summary=? WHERE id=?",
+            (
+                "queued" if ANALYSIS_CONFIG.enabled else "local_validated",
+                decision.quality_score,
+                decision.summary,
+                report_id,
+            ),
+        )
+        audit(connection, "volunteer_report", report_id, "created", {"category": category}, actor=user["id"])
         connection.commit()
         row = connection.execute("SELECT * FROM volunteer_reports WHERE id=?", (report_id,)).fetchone()
+    publish_realtime("report.created", {"reportId": report_id})
     return {"report": report_payload(row)}
 
 
@@ -837,10 +1294,12 @@ def delete_volunteer_report(report_id: str, user: sqlite3.Row = Depends(current_
                 detail="approved reports are public records and cannot be deleted by the reporter",
             )
         filename = Path(report["photo_filename"]).name
+        audit(connection, "volunteer_report", report_id, "deleted", {"previousStatus": report["status"]}, actor=user["id"])
         connection.execute("DELETE FROM volunteer_reports WHERE id=?", (report_id,))
         connection.commit()
     if filename:
         (VOLUNTEER_UPLOAD_DIR / filename).unlink(missing_ok=True)
+    publish_realtime("report.deleted", {"reportId": report_id})
     return {"deleted": True, "reportId": report_id}
 
 
@@ -945,8 +1404,10 @@ def claim_volunteer_task(task_id: str, user: sqlite3.Row = Depends(current_user)
             "INSERT INTO task_activity(task_id,actor_id,action,note,created_at) VALUES(?,?,?,'',?)",
             (task_id, user["id"], "claimed", timestamp),
         )
+        audit(connection, "task", task_id, "claimed", {"obstacleId": task["obstacle_id"]}, actor=user["id"])
         connection.commit()
         row = connection.execute(task_join_query("WHERE t.id=?"), (task_id,)).fetchone()
+    publish_realtime("task.claimed", {"taskId": task_id, "assigneeId": user["id"]})
     return {"task": task_payload(row)}
 
 
@@ -980,8 +1441,10 @@ async def complete_volunteer_task(
             "INSERT INTO task_activity(task_id,actor_id,action,note,created_at) VALUES(?,?,?,?,?)",
             (task_id, user["id"], "submitted", note, timestamp),
         )
+        audit(connection, "task", task_id, "submitted", {"obstacleId": obstacle["id"]}, actor=user["id"])
         connection.commit()
         row = connection.execute(task_join_query("WHERE t.id=?"), (task_id,)).fetchone()
+    publish_realtime("task.submitted", {"taskId": task_id})
     return {"task": task_payload(row)}
 
 
@@ -1040,8 +1503,10 @@ def review_volunteer_report(report_id: str, review: AdminReportReview) -> dict[s
                 "UPDATE volunteer_reports SET status='rejected',priority=?,review_note=?,reviewed_by='operator',reviewed_at=?,updated_at=? WHERE id=?",
                 (review.priority, review.note.strip(), timestamp, timestamp, report_id),
             )
+            audit(connection, "volunteer_report", report_id, "rejected", {"note": review.note.strip()}, actor="operator")
             connection.commit()
             row = connection.execute("SELECT * FROM volunteer_reports WHERE id=?", (report_id,)).fetchone()
+            publish_realtime("report.reviewed", {"reportId": report_id, "status": "rejected"})
             return {"report": report_payload(row, "admin"), "obstacle": None, "task": None}
 
         obstacle_id = f"OBS-{uuid.uuid4().hex[:10].upper()}"
@@ -1073,10 +1538,22 @@ def review_volunteer_report(report_id: str, review: AdminReportReview) -> dict[s
                 "INSERT INTO task_activity(task_id,actor_id,action,note,created_at) VALUES(?,NULL,'published',?,?)",
                 (task_id, review.note.strip(), timestamp),
             )
+        audit(
+            connection,
+            "volunteer_report",
+            report_id,
+            "approved",
+            {"obstacleId": obstacle_id, "taskId": task_id, "priority": review.priority},
+            actor="operator",
+        )
         connection.commit()
         reviewed = connection.execute("SELECT * FROM volunteer_reports WHERE id=?", (report_id,)).fetchone()
         obstacle = connection.execute("SELECT * FROM obstacles WHERE id=?", (obstacle_id,)).fetchone()
         task = connection.execute(task_join_query("WHERE t.id=?"), (task_id,)).fetchone() if task_id else None
+    publish_realtime(
+        "report.reviewed",
+        {"reportId": report_id, "status": "approved", "obstacleId": obstacle_id, "taskId": task_id},
+    )
     return {
         "report": report_payload(reviewed, "admin"),
         "obstacle": obstacle_payload(obstacle),
@@ -1225,8 +1702,10 @@ def review_volunteer_task(task_id: str, review: AdminTaskReview) -> dict[str, An
             "INSERT INTO task_activity(task_id,actor_id,action,note,created_at) VALUES(?,NULL,?,?,?)",
             (task_id, action, review.note.strip(), timestamp),
         )
+        audit(connection, "task", task_id, action, {"obstacleId": obstacle["id"]}, actor="operator")
         connection.commit()
         row = connection.execute(task_join_query("WHERE t.id=?"), (task_id,)).fetchone()
+    publish_realtime(f"task.{action}", {"taskId": task_id})
     return {"task": task_payload(row)}
 
 
@@ -1235,7 +1714,7 @@ def ingest_telemetry(payload: TelemetryEnvelope, authorization: str | None = Hea
     provided = (authorization or "").removeprefix("Bearer ").strip()
     if not INGEST_TOKEN or not hmac.compare_digest(provided, INGEST_TOKEN):
         raise HTTPException(status_code=401, detail="invalid ingest token")
-    body = payload.dict()
+    body = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
     device_id = str(payload.device.get("device_id") or payload.device.get("gateway_id") or "unknown-device")
     point_name = str(payload.device.get("point_name") or "blindway-point-01")
     received = now_iso()
@@ -1267,27 +1746,89 @@ def ingest_telemetry(payload: TelemetryEnvelope, authorization: str | None = Hea
         )
         props = payload.iot_properties
         runtime = payload.runtime
+        realtime_type = "telemetry.updated"
+        realtime_payload: dict[str, Any] = {"deviceId": device_id}
         if int(props.get("eventActive", 0)) == 1:
             source_event_id = str(runtime.get("last_event_id") or f"{device_id}-{props.get('captureEpoch', 0)}")
             event_type = str(runtime.get("last_obstacle_type") or "construction_obstacle")
-            confidence = int(runtime.get("last_confidence") or props.get("obstacleConfidence", 0))
+            raw_confidence = float(runtime.get("last_confidence") or props.get("obstacleConfidence", 0))
+            confidence = int(round(raw_confidence * 100 if raw_confidence <= 1 else raw_confidence))
             lat = float(payload.gps.get("lat") or props.get("gpsLatE6", 0) / 1_000_000 or DEFAULT_LAT)
             lng = float(payload.gps.get("lng") or props.get("gpsLngE6", 0) / 1_000_000 or DEFAULT_LNG)
             event_id = f"VB-{parse_time(payload.ts).strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
             created = parse_time(payload.ts).isoformat(timespec="seconds")
+            previous = connection.execute(
+                "SELECT id FROM events WHERE source_event_id=?", (source_event_id,)
+            ).fetchone()
             connection.execute(
                 "INSERT INTO events(id,source_event_id,device_id,type,type_label,status,severity,confidence,point_name,address,lat,lng,snapshot_url,source,created_at,updated_at,duration_sec) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source_event_id) DO UPDATE SET confidence=excluded.confidence,updated_at=excluded.updated_at,duration_sec=CAST((julianday(excluded.updated_at)-julianday(events.created_at))*86400 AS INTEGER),snapshot_url=COALESCE(excluded.snapshot_url,events.snapshot_url)",
-                (event_id, source_event_id, device_id, event_type, event_label(event_type), "active", severity_for(int(props.get("alertLevelCode", 0)), confidence), point_name, "移动巡检终端实时上报点位", lat, lng, snapshot_url, "树莓派实机", created, received, 0),
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source_event_id) WHERE source_event_id IS NOT NULL AND source_event_id <> '' DO UPDATE SET confidence=excluded.confidence,updated_at=excluded.updated_at,duration_sec=CAST((julianday(excluded.updated_at)-julianday(events.created_at))*86400 AS INTEGER),snapshot_url=COALESCE(excluded.snapshot_url,events.snapshot_url)",
+                (event_id, source_event_id, device_id, event_type, event_label(event_type), "active", severity_for(int(props.get("alertLevelCode", 0)), confidence), confidence, point_name, "移动巡检终端实时上报点位", lat, lng, snapshot_url, "边缘设备实机", created, received, 0),
             )
+            current_event = connection.execute(
+                "SELECT id FROM events WHERE source_event_id=?", (source_event_id,)
+            ).fetchone()
+            if previous is None:
+                _, decision, _ = register_raw_ingest(
+                    connection,
+                    source="edge",
+                    source_id=source_event_id,
+                    analysis_input={
+                        "category": event_type,
+                        "description": f"{point_name} 连续检测确认的{event_label(event_type)}",
+                        "address": "移动巡检终端实时上报点位",
+                        "lat": lat,
+                        "lng": lng,
+                        "confidence": confidence,
+                        "durationSec": 0,
+                        "timestamp": created,
+                        "gpsHdop": payload.gps.get("hdop") or props.get("hdopX100", 0) / 100,
+                        "deviceId": device_id,
+                        "snapshotUrl": snapshot_url,
+                    },
+                    photo_path=snapshot_url,
+                )
+                connection.execute(
+                    "UPDATE events SET analysis_status=?,quality_score=?,analysis_summary=?,analysis_provider='local' WHERE source_event_id=?",
+                    (
+                        "queued" if ANALYSIS_CONFIG.enabled else "local_validated",
+                        decision.quality_score,
+                        decision.summary,
+                        source_event_id,
+                    ),
+                )
+                audit(connection, "event", current_event["id"], "created", {"sourceEventId": source_event_id, "deviceId": device_id})
+            realtime_type = "event.updated"
+            realtime_payload.update({"eventId": current_event["id"], "sourceEventId": source_event_id})
+        elif str(runtime.get("event_state") or "").lower() == "cleared" and runtime.get("last_event_id"):
+            source_event_id = str(runtime["last_event_id"])
+            cleared = connection.execute(
+                "UPDATE events SET status='cleared',updated_at=? WHERE source_event_id=? AND status='active'",
+                (received, source_event_id),
+            )
+            if cleared.rowcount:
+                current_event = connection.execute(
+                    "SELECT id FROM events WHERE source_event_id=?", (source_event_id,)
+                ).fetchone()
+                audit(connection, "event", current_event["id"], "edge_cleared", {"deviceId": device_id})
+                realtime_type = "event.cleared"
+                realtime_payload.update({"eventId": current_event["id"], "sourceEventId": source_event_id})
         connection.execute("DELETE FROM telemetry WHERE id NOT IN (SELECT id FROM telemetry ORDER BY id DESC LIMIT 50000)")
         connection.commit()
+    publish_realtime(realtime_type, realtime_payload)
     return {"accepted": True, "deviceId": device_id, "receivedAt": received}
 
 
 @app.get("/api/v1/overview")
 def overview() -> dict[str, Any]:
     paths = media_paths()
+    current = datetime.now(TZ)
+    today = current.date()
+    yesterday = today - timedelta(days=1)
+    labels = [f"{hour:02d}" for hour in range(0, 24, 3)]
+    event_trend = [0] * len(labels)
+    inference_samples: list[list[float]] = [[] for _ in labels]
+    camera_samples: list[list[float]] = [[] for _ in labels]
     with DB_LOCK, db() as connection:
         device_rows = connection.execute("SELECT * FROM devices ORDER BY last_seen DESC").fetchall()
         device_row = device_rows[0] if device_rows else None
@@ -1295,30 +1836,127 @@ def overview() -> dict[str, Any]:
             "SELECT * FROM events WHERE status IN ('active','dispatched') ORDER BY created_at DESC LIMIT 20"
         ).fetchall()]
         devices = [normalize_device(row, paths) for row in device_rows]
-        device = devices[0] if devices else normalize_device(None, paths)
+        device = devices[0] if devices else None
         online_devices = sum(1 for item in devices if item["status"] == "online")
-        live = online_devices > 0
-        today_prefix = datetime.now(TZ).date().isoformat()
+        today_prefix = today.isoformat()
+        yesterday_prefix = yesterday.isoformat()
         today_count = connection.execute("SELECT COUNT(*) FROM events WHERE created_at LIKE ?", (today_prefix + "%",)).fetchone()[0]
+        yesterday_count = connection.execute("SELECT COUNT(*) FROM events WHERE created_at LIKE ?", (yesterday_prefix + "%",)).fetchone()[0]
         total = connection.execute("SELECT COUNT(*) FROM events").fetchone()[0]
         cleared = connection.execute("SELECT COUNT(*) FROM events WHERE status='cleared'").fetchone()[0]
         active = connection.execute("SELECT COUNT(*) FROM events WHERE status IN ('active','dispatched')").fetchone()[0]
-        demo_count = connection.execute("SELECT COUNT(*) FROM events WHERE source='历史演示样例'").fetchone()[0]
-    labels = ["08", "10", "12", "14", "16", "18", "20", "22"]
+        response_rows = connection.execute(
+            "SELECT created_at,claimed_at FROM public_tasks WHERE claimed_at IS NOT NULL"
+        ).fetchall()
+        analysis_rows = connection.execute(
+            "SELECT status,COUNT(*) AS count FROM analysis_jobs GROUP BY status"
+        ).fetchall()
+        today_events = connection.execute(
+            "SELECT created_at FROM events WHERE created_at LIKE ?", (today_prefix + "%",)
+        ).fetchall()
+        telemetry_rows = connection.execute(
+            "SELECT received_at,payload FROM telemetry WHERE received_at LIKE ? ORDER BY received_at",
+            (today_prefix + "%",),
+        ).fetchall()
+    for row in today_events:
+        event_time = parse_time(row["created_at"]).astimezone(TZ)
+        event_trend[min(7, event_time.hour // 3)] += 1
+    for row in telemetry_rows:
+        try:
+            telemetry_time = parse_time(row["received_at"]).astimezone(TZ)
+            runtime = json.loads(row["payload"]).get("runtime") or {}
+            bucket = min(7, telemetry_time.hour // 3)
+            if runtime.get("inference_ms") is not None:
+                inference_samples[bucket].append(float(runtime["inference_ms"]))
+            if runtime.get("camera_fps") is not None:
+                camera_samples[bucket].append(float(runtime["camera_fps"]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+    response_minutes = [
+        max(0.0, (parse_time(row["claimed_at"]) - parse_time(row["created_at"])).total_seconds() / 60)
+        for row in response_rows
+    ]
+    if yesterday_count:
+        today_change = round((today_count - yesterday_count) / yesterday_count * 100, 1)
+    else:
+        today_change = 100.0 if today_count else 0.0
+    analysis_counts = {row["status"]: row["count"] for row in analysis_rows}
     return {
         "generatedAt": now_iso(),
-        "dataMode": "hybrid" if live and demo_count else "live" if live else "demo",
-        "linkStatus": "online" if live else "offline",
+        "dataMode": "live" if devices or total else "empty",
+        "linkStatus": "online" if online_devices else "offline",
         "kpis": {
-            "onlineDevices": online_devices, "totalDevices": max(1, len(devices)),
+            "onlineDevices": online_devices, "totalDevices": len(devices),
             "activeEvents": active, "todayEvents": today_count,
             "closureRate": round(cleared / total * 100) if total else 0,
-            "averageResponseMin": 4.8,
+            "averageResponseMin": round(sum(response_minutes) / len(response_minutes), 1) if response_minutes else None,
+            "todayChangePercent": today_change,
         },
         "device": device,
         "recentEvents": events,
-        "trends": {"labels": labels, "events": [1,2,1,4,3,5,3,2], "inferenceMs": [708,692,681,674,666,672,658,664], "cameraFps": [7.2,7.4,7.7,7.8,7.6,7.8,7.9,7.8]},
+        "trends": {
+            "labels": labels,
+            "events": event_trend,
+            "inferenceMs": [round(sum(values) / len(values)) if values else None for values in inference_samples],
+            "cameraFps": [round(sum(values) / len(values), 1) if values else None for values in camera_samples],
+        },
+        "analysis": {
+            "provider": ANALYSIS_CONFIG.mode,
+            "configured": ANALYSIS_CONFIG.enabled,
+            "jobs": analysis_counts,
+        },
     }
+
+
+@app.get("/api/v1/admin/analysis/status")
+def analysis_status() -> dict[str, Any]:
+    with DB_LOCK, db() as connection:
+        rows = connection.execute(
+            "SELECT status,COUNT(*) AS count FROM analysis_jobs GROUP BY status"
+        ).fetchall()
+        flagged = connection.execute("SELECT COUNT(*) FROM data_quality_flags").fetchone()[0]
+    return {
+        "provider": ANALYSIS_CONFIG.mode,
+        "configured": ANALYSIS_CONFIG.enabled,
+        "workflow": ANALYSIS_CONFIG.workflow,
+        "jobs": {row["status"]: row["count"] for row in rows},
+        "qualityFlagCount": flagged,
+        "generatedAt": now_iso(),
+    }
+
+
+@app.get("/api/v1/admin/analysis/jobs")
+def analysis_jobs(status: str | None = Query(default=None)) -> dict[str, Any]:
+    query = (
+        "SELECT j.*,r.source,r.source_id,r.received_at FROM analysis_jobs j "
+        "JOIN raw_ingest r ON r.id=j.raw_ingest_id"
+    )
+    params: list[Any] = []
+    if status:
+        query += " WHERE j.status=?"
+        params.append(status)
+    query += " ORDER BY j.created_at DESC LIMIT 500"
+    with DB_LOCK, db() as connection:
+        rows = connection.execute(query, params).fetchall()
+    return {"items": [dict(row) for row in rows], "count": len(rows)}
+
+
+@app.post("/api/v1/admin/analysis/jobs/{job_id}/retry")
+def retry_analysis_job(job_id: str) -> dict[str, Any]:
+    if not ANALYSIS_CONFIG.enabled:
+        raise HTTPException(status_code=409, detail="analysis provider is not configured")
+    timestamp = now_iso()
+    with DB_LOCK, db() as connection:
+        cursor = connection.execute(
+            "UPDATE analysis_jobs SET status='queued',next_attempt_at=?,last_error='',updated_at=? WHERE id=?",
+            (timestamp, timestamp, job_id),
+        )
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="analysis job not found")
+        audit(connection, "analysis_job", job_id, "manually_retried", actor="operator")
+        connection.commit()
+    publish_realtime("analysis.queued", {"jobId": job_id})
+    return {"queued": True, "jobId": job_id}
 
 
 @app.get("/api/v1/events")
@@ -1352,8 +1990,10 @@ def update_event(event_id: str, action: EventAction) -> dict[str, Any]:
         cursor = connection.execute("UPDATE events SET status=?,updated_at=? WHERE id=?", (status, now_iso(), event_id))
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="event not found")
+        audit(connection, "event", event_id, status, actor="operator")
         connection.commit()
         row = connection.execute("SELECT * FROM events WHERE id=?", (event_id,)).fetchone()
+    publish_realtime("event.updated", {"eventId": event_id, "status": status})
     return row_to_event(row)
 
 
@@ -1387,10 +2027,20 @@ def snapshot_metadata(filename: str):
 @app.websocket("/ws/realtime")
 async def realtime(websocket: WebSocket):
     await websocket.accept()
+    last_version = -1
+    last_heartbeat = 0.0
     try:
         while True:
-            await websocket.send_json({"type": "heartbeat", "time": now_iso()})
-            await asyncio.sleep(5)
+            version, event = realtime_snapshot()
+            current_monotonic = time.monotonic()
+            if version != last_version:
+                await websocket.send_json(event)
+                last_version = version
+                last_heartbeat = current_monotonic
+            elif current_monotonic - last_heartbeat >= 15:
+                await websocket.send_json({"type": "heartbeat", "version": version, "time": now_iso()})
+                last_heartbeat = current_monotonic
+            await asyncio.sleep(0.5)
     except WebSocketDisconnect:
         return
 
