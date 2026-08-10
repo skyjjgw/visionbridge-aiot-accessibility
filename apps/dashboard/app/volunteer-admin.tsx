@@ -4,6 +4,7 @@ import { Alert, Button, Chip, Modal, Tabs, TextArea, toast } from "@heroui/react
 import { Check, Database, MapPinned, RefreshCw, Route, ShieldAlert, X } from "lucide-react";
 import Image from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRealtimeRefresh } from "./use-realtime-refresh";
 
 type ReportStatus = "pending" | "approved" | "rejected";
 type TaskStatus = "open" | "claimed" | "submitted" | "verified" | "cancelled";
@@ -23,6 +24,9 @@ type VolunteerReport = {
   status: ReportStatus;
   priority: "low" | "normal" | "urgent";
   reviewNote: string;
+  analysisStatus: string;
+  qualityScore: number | null;
+  analysisSummary: string;
   createdAt: string;
   reporter: { email: string; displayName: string };
 };
@@ -111,7 +115,7 @@ export function VolunteerAdminView() {
 
   useEffect(() => {
     const initial = window.setTimeout(() => void load(), 0);
-    const timer = window.setInterval(() => void load(true), 4000);
+    const timer = window.setInterval(() => void load(true), 30000);
     const onVisibility = () => { if (document.visibilityState === "visible") void load(true); };
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("focus", onVisibility);
@@ -122,6 +126,8 @@ export function VolunteerAdminView() {
       window.removeEventListener("focus", onVisibility);
     };
   }, [load]);
+  const realtimeLoad = useCallback(() => { void load(true); }, [load]);
+  useRealtimeRefresh(realtimeLoad);
 
   const reviewReport = async (report: VolunteerReport, action: "approve" | "reject", note: string) => {
     if (action === "reject" && note.trim().length < 2) return;
@@ -223,7 +229,7 @@ export function VolunteerAdminView() {
         {!loading && reports[reportStatus].length === 0 && <div className="panel admin-empty"><Check size={24} /><strong>当前没有{reportLabels[reportStatus]}上报</strong><span>新的手机上报会自动出现在这里。</span></div>}
         {reports[reportStatus].map((report) => <article className="panel review-card" key={report.id}>
           <Image className="review-photo" src={report.photoUrl} alt={report.categoryLabel} width={320} height={200} unoptimized />
-          <div className="review-copy"><div className="review-title"><Chip className={`priority priority-${report.priority}`} size="sm" variant="soft">{({ low: "低", normal: "普通", urgent: "紧急" })[report.priority]}</Chip><h2>{report.categoryLabel}</h2><small>{new Date(report.createdAt).toLocaleString("zh-CN")}</small></div><p>{report.description}</p><div className="review-meta"><span><MapPinned size={14} />{report.address}</span><span><ShieldAlert size={14} />{report.cleanupReasonLabel}</span><span>上报人：{report.reporter.displayName}（{report.reporter.email}）</span><span>编号：{report.id}</span></div>{report.reviewNote && <div className="review-note">审核说明：{report.reviewNote}</div>}</div>
+          <div className="review-copy"><div className="review-title"><Chip className={`priority priority-${report.priority}`} size="sm" variant="soft">{({ low: "低", normal: "普通", urgent: "紧急" })[report.priority]}</Chip><h2>{report.categoryLabel}</h2><small>{new Date(report.createdAt).toLocaleString("zh-CN")}</small></div><p>{report.description}</p><div className="review-meta"><span><MapPinned size={14} />{report.address}</span><span><ShieldAlert size={14} />{report.cleanupReasonLabel}</span><span><Database size={14} />质量评分：{report.qualityScore === null ? "待计算" : `${Math.round(report.qualityScore * 100)} 分`} · {report.analysisStatus}</span><span>上报人：{report.reporter.displayName}（{report.reporter.email}）</span><span>编号：{report.id}</span></div>{report.analysisSummary && <div className="review-note">数据分析：{report.analysisSummary}</div>}{report.reviewNote && <div className="review-note">审核说明：{report.reviewNote}</div>}</div>
           {report.status === "pending" && <div className="review-actions"><Button className="secondary-action danger-action" size="sm" variant="ghost" onClick={() => openReview({ kind: "report", item: report, action: "reject" })}><X size={15} />驳回</Button><Button className="primary-action" size="sm" variant="primary" onClick={() => openReview({ kind: "report", item: report, action: "approve" })}><Check size={15} />通过并派单</Button></div>}
         </article>)}
       </div>

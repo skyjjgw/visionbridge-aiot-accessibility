@@ -33,7 +33,7 @@ test("server-renders the VisionBridge dashboard", async () => {
   assert.match(html, /<title>视桥 · 城市盲道智能监管平台<\/title>/);
   assert.match(html, /城市盲道智能监管平台/);
   assert.match(html, /自有云接入/);
-  assert.match(html, /树莓派实机/);
+  assert.match(html, /边缘设备实机/);
 });
 
 test("static deployment contains every referenced asset", async () => {
@@ -55,7 +55,7 @@ test("static deployment contains every referenced asset", async () => {
   }
 });
 
-test("documents the direct-to-own-cloud data path and offline fallback", async () => {
+test("documents the direct-to-own-cloud data path and verified empty fallback", async () => {
   const source = await readFile(
     new URL("../app/vision-bridge-dashboard.tsx", import.meta.url),
     "utf8",
@@ -66,6 +66,8 @@ test("documents the direct-to-own-cloud data path and offline fallback", async (
   assert.match(source, /运行链路不经过研华或其他第三方平台/);
   assert.match(source, /\/api\/v1\/telemetry/);
   assert.match(source, /linkStatus:\s*"offline"/);
+  assert.match(source, /dataMode:\s*"empty"/);
+  assert.doesNotMatch(source, /mockOverview|历史演示样例|演示数据/);
   assert.doesNotMatch(source, /云桥接|签名 REST/);
 });
 
@@ -83,7 +85,7 @@ test("volunteer operations declare admin protection and load independent data so
   assert.doesNotMatch(source, /管理员验证|进入审核台/);
 });
 
-test("active maps refresh automatically without recreating the AMap instance", async () => {
+test("active maps use realtime invalidation without recreating the AMap instance", async () => {
   const dashboard = await readFile(
     new URL("../app/vision-bridge-dashboard.tsx", import.meta.url),
     "utf8",
@@ -93,12 +95,14 @@ test("active maps refresh automatically without recreating the AMap instance", a
     "utf8",
   );
 
-  assert.match(dashboard, /setInterval\(\(\) => void refresh\(\), 3000\)/);
+  assert.match(dashboard, /new WebSocket\(endpoint\)/);
+  assert.match(dashboard, /setInterval\(\(\) => void refresh\(\), 15000\)/);
   assert.match(dashboard, /markersRef\.current/);
   assert.match(dashboard, /visibilitychange/);
   assert.match(dashboard, /active: "未接单"/);
   assert.doesNotMatch(dashboard, /\["all", "active", "dispatched", "cleared"\]/);
-  assert.match(admin, /setInterval\(\(\) => void load\(true\), 4000\)/);
+  assert.match(admin, /useRealtimeRefresh/);
+  assert.match(admin, /setInterval\(\(\) => void load\(true\), 30000\)/);
 });
 
 test("edge fleet supports multi-device live WebRTC with HLS fallback", async () => {
@@ -116,7 +120,8 @@ test("edge fleet supports multi-device live WebRTC with HLS fallback", async () 
   assert.match(fleet, /WebRTC 低延迟/);
   assert.match(fleet, /HLS 兼容/);
   assert.match(fleet, /devices\.map/);
-  assert.match(fleet, /setInterval\(\(\) => void refresh\(\), 3000\)/);
+  assert.match(fleet, /useRealtimeRefresh/);
+  assert.match(fleet, /setInterval\(\(\) => void refresh\(\), 30000\)/);
   assert.match(fleet, /visibilitychange/);
   assert.match(fleet, /实时识别画面/);
 });

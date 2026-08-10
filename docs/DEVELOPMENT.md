@@ -31,7 +31,7 @@ flutter pub get
 
 ```text
 VISIONBRIDGE_EMAIL_DEBUG=1
-VISIONBRIDGE_SEED_DEMO_DATA=1
+# 服务不注入演示数据；空库会显示真实空状态。
 VISIONBRIDGE_AUTH_SECRET=仅用于本次开发的随机值
 VISIONBRIDGE_INGEST_TOKEN=仅用于本次开发的随机值
 ```

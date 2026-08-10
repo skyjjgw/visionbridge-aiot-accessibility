@@ -83,7 +83,7 @@ export type Device = {
 
 type Overview = {
   generatedAt: string;
-  dataMode: "live" | "hybrid" | "demo";
+  dataMode: "live" | "empty";
   linkStatus: "online" | "degraded" | "offline";
   kpis: {
     onlineDevices: number;
@@ -91,16 +91,18 @@ type Overview = {
     activeEvents: number;
     todayEvents: number;
     closureRate: number;
-    averageResponseMin: number;
+    averageResponseMin: number | null;
+    todayChangePercent: number;
   };
-  device: Device;
+  device: Device | null;
   recentEvents: EventItem[];
   trends: {
     labels: string[];
     events: number[];
-    inferenceMs: number[];
-    cameraFps: number[];
+    inferenceMs: (number | null)[];
+    cameraFps: (number | null)[];
   };
+  analysis: { provider: string; configured: boolean; jobs: Record<string, number> };
 };
 
 type PublicConfig = { amapKey?: string; amapSecurityCode?: string; defaultCenter?: [number, number] };
@@ -137,80 +139,15 @@ declare global {
   }
 }
 
-const mockOverview: Overview = {
-  generatedAt: new Date().toISOString(),
-  dataMode: "demo",
-  linkStatus: "online",
-  kpis: {
-    onlineDevices: 1,
-    totalDevices: 1,
-    activeEvents: 1,
-    todayEvents: 6,
-    closureRate: 92,
-    averageResponseMin: 4.8,
-  },
-  device: {
-    id: "uno-cloud-gateway-01",
-    name: "视桥移动巡检终端 01",
-    status: "online",
-    pointName: "blindway-point-01",
-    lastSeen: new Date().toISOString(),
-    cameraStatus: "streaming",
-    gpsStatus: "connected",
-    cameraFps: 7.8,
-    inferenceMs: 672,
-    inferenceFps: 1.5,
-    sats: 0,
-    hdop: 99.99,
-    lat: 28.632112,
-    lng: 121.138923,
-    model: "YOLOv8 · ONNX v1",
-    streamPath: "devices/uno-cloud-gateway-01",
-    streamStatus: "offline",
-    streamReaders: 0,
-    webRtcUrl: "/webrtc/devices/uno-cloud-gateway-01/",
-    hlsUrl: "/hls/devices/uno-cloud-gateway-01/",
-  },
-  recentEvents: [
-    {
-      id: "VB-20260802-006",
-      type: "construction_obstacle",
-      typeLabel: "施工杂物占用",
-      status: "active",
-      statusLabel: "未接单",
-      severity: "critical",
-      confidence: 91,
-      pointName: "学院路东侧盲道",
-      address: "学院路与求知路交叉口东南侧",
-      lat: 28.63236,
-      lng: 121.13921,
-      createdAt: new Date(Date.now() - 7 * 60_000).toISOString(),
-      durationSec: 428,
-      source: "历史演示样例",
-    },
-    {
-      id: "VB-20260802-005",
-      type: "non_motor_vehicle",
-      typeLabel: "非机动车占用",
-      status: "dispatched",
-      statusLabel: "处置中",
-      severity: "warning",
-      confidence: 87,
-      pointName: "博学路北段",
-      address: "博学路公交站向北 120 米",
-      lat: 28.63174,
-      lng: 121.13842,
-      createdAt: new Date(Date.now() - 31 * 60_000).toISOString(),
-      durationSec: 1280,
-      source: "历史演示样例",
-    },
-  ],
-  trends: {
-    labels: ["08", "10", "12", "14", "16", "18", "20", "22"],
-    events: [1, 2, 1, 4, 3, 5, 3, 2],
-    inferenceMs: [708, 692, 681, 674, 666, 672, 658, 664],
-    cameraFps: [7.2, 7.4, 7.7, 7.8, 7.6, 7.8, 7.9, 7.8],
-  },
+const emptyOverview: Overview = {
+  generatedAt: "",
+  dataMode: "empty",
+  linkStatus: "offline",
+  kpis: { onlineDevices: 0, totalDevices: 0, activeEvents: 0, todayEvents: 0, closureRate: 0, averageResponseMin: null, todayChangePercent: 0 },
+  device: null,
+  recentEvents: [],
+  trends: { labels: [], events: [], inferenceMs: [], cameraFps: [] },
+  analysis: { provider: "disabled", configured: false, jobs: {} },
 };
 
 const navItems = [
@@ -268,8 +205,8 @@ function MapStage({ config, overview, onEvent }: { config: PublicConfig; overvie
   const markersRef = useRef<AMapMarkerInstance[]>([]);
   const [mapReady, setMapReady] = useState(false);
   const [mapFailed, setMapFailed] = useState(false);
-  const centerLng = config.defaultCenter?.[0] ?? overview.device.lng;
-  const centerLat = config.defaultCenter?.[1] ?? overview.device.lat;
+  const centerLng = overview.device?.lng ?? config.defaultCenter?.[0] ?? 121.138923;
+  const centerLat = overview.device?.lat ?? config.defaultCenter?.[1] ?? 28.632112;
 
   useEffect(() => {
     if (!config.amapKey || !mapRef.current) return;
@@ -332,14 +269,7 @@ function MapStage({ config, overview, onEvent }: { config: PublicConfig; overvie
         </div>
       </div>
       <div className={`map-canvas ${fallback ? "fallback-map" : ""}`} ref={mapRef}>
-        {fallback && <>
-          <div className="map-road road-a" /><div className="map-road road-b" /><div className="map-road road-c" />
-          <div className="map-area area-a">学院生活区</div><div className="map-area area-b">城市开放道路</div>
-          {overview.recentEvents.map((event, index) => (
-            <button key={event.id} className={`fallback-marker marker-${index + 1} ${event.status}`} onClick={() => onEvent(event)} aria-label={event.typeLabel}><span /></button>
-          ))}
-          <div className="device-marker"><Radio size={15} /><span>巡检终端 01</span></div>
-        </>}
+        {fallback && <div className="map-loading"><MapPinned size={20} />高德地图服务未配置或暂不可用；事件列表仍为实时数据</div>}
         {!fallback && !mapReady && <div className="map-loading"><RefreshCw size={20} className="spin" />地图加载中</div>}
         <div className="map-legend"><span><i className="legend-critical" />未接单</span><span><i className="legend-dispatch" />处置中</span></div>
         <div className="map-source">高德地图 JS API 2.0 · GCJ-02</div>
@@ -348,7 +278,8 @@ function MapStage({ config, overview, onEvent }: { config: PublicConfig; overvie
   );
 }
 
-function DeviceHealth({ device }: { device: Device }) {
+function DeviceHealth({ device }: { device: Device | null }) {
+  if (!device) return <section className="panel device-health"><div className="panel-head"><div><span className="eyebrow">实时终端</span><h2>设备健康</h2></div></div><div className="map-loading"><Cpu size={20} />尚无边缘设备上报</div></section>;
   const items = [
     { label: "摄像头", value: device.cameraStatus === "streaming" ? "工作正常" : device.cameraStatus, icon: Camera, ok: device.cameraStatus === "streaming" },
     { label: "GPS 定位", value: device.sats > 0 ? `${device.sats} 星 · HDOP ${device.hdop}` : "串口在线 · 等待定位", icon: Satellite, ok: device.gpsStatus === "connected" },
@@ -379,6 +310,7 @@ function EventQueue({ events, onSelect }: { events: EventItem[]; onSelect: (even
             <ArrowRight size={16} />
           </button>
         ))}
+        {events.length === 0 && <div className="map-loading"><Check size={18} />当前没有待处置事件</div>}
       </div>
     </section>
   );
@@ -386,13 +318,16 @@ function EventQueue({ events, onSelect }: { events: EventItem[]; onSelect: (even
 
 function TrendPanel({ overview }: { overview: Overview }) {
   const max = Math.max(...overview.trends.events, 1);
+  const peakIndex = overview.trends.events.indexOf(Math.max(...overview.trends.events, 0));
+  const peakLabel = peakIndex >= 0 ? `${overview.trends.labels[peakIndex]}:00` : "暂无";
+  const change = overview.kpis.todayChangePercent;
   return (
     <section className="panel trend-panel">
       <div className="panel-head"><div><span className="eyebrow">24 小时</span><h2>事件发生趋势</h2></div><Button className="chip" size="sm" variant="ghost">今日 <ChevronDown size={13} /></Button></div>
       <div className="bar-chart" role="img" aria-label="24 小时事件发生趋势柱状图">
         {overview.trends.events.map((value, index) => <div className="bar-column" key={`${overview.trends.labels[index]}-${index}`}><div className="bar-value">{value}</div><div className="bar-track"><i style={{ height: `${Math.max(12, value / max * 100)}%` }} /></div><span>{overview.trends.labels[index]}:00</span></div>)}
       </div>
-      <div className="trend-summary"><span><i className="dot-blue" />峰值时段 <strong>18:00–20:00</strong></span><span>较昨日 <strong className="up">+12.5%</strong></span></div>
+      <div className="trend-summary"><span><i className="dot-blue" />峰值时段 <strong>{peakLabel}</strong></span><span>较昨日 <strong className={change >= 0 ? "up" : ""}>{change > 0 ? "+" : ""}{change}%</strong></span></div>
     </section>
   );
 }
@@ -423,11 +358,13 @@ function EventDrawer({ event, onClose, onAction }: { event: EventItem | null; on
 }
 
 function IntegrationView({ overview }: { overview: Overview }) {
+  const device = overview.device;
   const sources = [
-    { icon: Camera, name: "USB 摄像头", detail: "OpenCV / MJPG · 320×240", status: overview.device.cameraStatus === "streaming" ? "已连接" : "异常" },
-    { icon: Satellite, name: "LC76G GNSS", detail: "NMEA 0183 · GCJ-02", status: overview.device.gpsStatus === "connected" ? "串口在线" : "异常" },
-    { icon: Cpu, name: "YOLOv8 边缘推理", detail: `${overview.device.inferenceMs} ms · ONNX Runtime`, status: "运行中" },
+    { icon: Camera, name: "USB 摄像头", detail: "OpenCV / MJPG", status: device?.cameraStatus === "streaming" ? "已连接" : "未上报" },
+    { icon: Satellite, name: "LC76G GNSS", detail: "NMEA 0183 · GCJ-02", status: device?.gpsStatus === "connected" ? "串口在线" : "未上报" },
+    { icon: Cpu, name: "YOLOv8 边缘推理", detail: device ? `${device.inferenceMs} ms · ONNX Runtime` : "等待边缘设备上报", status: device ? "运行数据已接入" : "未上报" },
     { icon: Cloud, name: "视桥自有云 API", detail: "主进程直传 · Bearer REST", status: overview.linkStatus === "online" ? "可用" : "降级" },
+    { icon: Database, name: "异步数据清洗", detail: overview.analysis.provider === "advantech_dify" ? "研华托管 Dify Workflow" : overview.analysis.provider, status: overview.analysis.configured ? "已配置" : "待配置" },
   ];
   const endpoints = [
     ["POST", "/api/v1/telemetry", "边缘端遥测与事件上报"],
@@ -441,11 +378,13 @@ function IntegrationView({ overview }: { overview: Overview }) {
 
 export function VisionBridgeDashboard() {
   const [view, setView] = useState<View>("overview");
-  const [overview, setOverview] = useState<Overview>(mockOverview);
+  const [overview, setOverview] = useState<Overview>(emptyOverview);
   const [config, setConfig] = useState<PublicConfig>({ defaultCenter: [121.138923, 28.632112] });
   const [selectedEvent, setSelectedEvent] = useState<EventItem | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [dataError, setDataError] = useState("");
+  const [realtimeConnected, setRealtimeConnected] = useState(false);
   const [lastUpdated, setLastUpdated] = useState(new Date());
   const refreshSequence = useRef(0);
 
@@ -455,23 +394,18 @@ export function VisionBridgeDashboard() {
       const nextOverview = await fetchJson<Overview>("/api/v1/overview");
       if (sequence !== refreshSequence.current) return;
       setOverview(nextOverview);
+      setDataError("");
       setLastUpdated(new Date());
-    } catch {
+    } catch (reason) {
       if (sequence !== refreshSequence.current) return;
-      setOverview((current) => ({
-        ...current,
-        generatedAt: new Date().toISOString(),
-        dataMode: "demo",
-        linkStatus: "offline",
-        device: { ...current.device, status: "offline" },
-      }));
+      setDataError(reason instanceof Error ? reason.message : "实时数据暂不可用");
     } finally { setLoading(false); }
   }, []);
 
   useEffect(() => {
     void fetchJson<PublicConfig>("/api/v1/config/public").then(setConfig).catch(() => undefined);
     const initial = window.setTimeout(() => void refresh(), 0);
-    const timer = window.setInterval(() => void refresh(), 3000);
+    const timer = window.setInterval(() => void refresh(), 15000);
     const onVisibility = () => { if (document.visibilityState === "visible") void refresh(); };
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("focus", onVisibility);
@@ -483,6 +417,35 @@ export function VisionBridgeDashboard() {
     };
   }, [refresh]);
 
+  useEffect(() => {
+    let stopped = false;
+    let socket: WebSocket | null = null;
+    let reconnectTimer: number | undefined;
+    const connect = () => {
+      const endpoint = new URL("/ws/realtime", window.location.href);
+      endpoint.protocol = endpoint.protocol === "https:" ? "wss:" : "ws:";
+      socket = new WebSocket(endpoint);
+      socket.onopen = () => setRealtimeConnected(true);
+      socket.onmessage = (message) => {
+        try {
+          const event = JSON.parse(String(message.data)) as { type?: string };
+          if (event.type !== "heartbeat") void refresh();
+        } catch { /* Ignore malformed frames and keep the last verified snapshot. */ }
+      };
+      socket.onerror = () => socket?.close();
+      socket.onclose = () => {
+        setRealtimeConnected(false);
+        if (!stopped) reconnectTimer = window.setTimeout(connect, 3000);
+      };
+    };
+    connect();
+    return () => {
+      stopped = true;
+      if (reconnectTimer) window.clearTimeout(reconnectTimer);
+      socket?.close();
+    };
+  }, [refresh]);
+
   const actionEvent = useCallback(async (id: string, action: "dispatch" | "clear") => {
     try {
       await fetchJson(`/api/v1/events/${encodeURIComponent(id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }) });
@@ -491,35 +454,43 @@ export function VisionBridgeDashboard() {
   }, [refresh]);
 
   const currentLabel = useMemo(() => navItems.find((item) => item.id === view)?.label, [view]);
+  const eventComposition = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const event of overview.recentEvents) counts.set(event.typeLabel, (counts.get(event.typeLabel) ?? 0) + 1);
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
+  }, [overview.recentEvents]);
+  const inferenceValues = overview.trends.inferenceMs.filter((value): value is number => value !== null);
+  const cameraValues = overview.trends.cameraFps.filter((value): value is number => value !== null);
   const chooseView = (next: View) => { setView(next); setMenuOpen(false); window.scrollTo({ top: 0, behavior: "smooth" }); };
 
   return <div className="app-shell">
     <aside className={`sidebar ${menuOpen ? "open" : ""}`}>
       <div className="brand"><div className="brand-mark"><Route size={24} /></div><div><strong>视桥</strong><span>VISIONBRIDGE</span></div></div>
       <nav>{navItems.map(({ id, label, icon: Icon }) => <button key={id} className={view === id ? "active" : ""} onClick={() => chooseView(id)}><Icon size={18} /><span>{label}</span>{id === "events" && overview.kpis.activeEvents > 0 && <em>{overview.kpis.activeEvents}</em>}</button>)}</nav>
-      <div className="sidebar-system"><span>系统链路</span><div className="mini-flow"><i className="on" /><b>端</b><span /><i className="on" /><b>云</b><span /><i className="on" /><b>屏</b></div><small>边缘、云端与界面链路正常</small></div>
+       <div className="sidebar-system"><span>系统链路</span><div className="mini-flow"><i className={overview.device?.status === "online" ? "on" : ""} /><b>端</b><span /><i className={!dataError ? "on" : ""} /><b>云</b><span /><i className={realtimeConnected ? "on" : ""} /><b>屏</b></div><small>{realtimeConnected ? "实时推送已连接" : "实时推送重连中，15 秒轮询兜底"}</small></div>
       <div className="competition-tag"><span>ADVANTECH</span><strong>2026 研华 AIoT 大赛</strong></div>
     </aside>
     {menuOpen && <button className="mobile-mask" onClick={() => setMenuOpen(false)} aria-label="关闭导航" />}
     <div className="workspace">
-      <header className="topbar"><div className="topbar-left"><Button className="mobile-menu" isIconOnly size="sm" variant="ghost" onClick={() => setMenuOpen(true)} aria-label="打开导航"><Menu size={19} /></Button><span>{currentLabel}</span><i /> <small>城市无障碍设施智能监管</small></div><div className="topbar-right"><Chip className={`connection-state state-${overview.linkStatus}`} size="sm" variant="soft"><i />{overview.linkStatus === "online" ? "实时链路正常" : "链路降级"}</Chip><Tooltip><Button className="icon-button" isIconOnly size="sm" variant="ghost" onClick={refresh} aria-label="刷新数据"><RefreshCw size={16} className={loading ? "spin" : ""} /></Button><Tooltip.Content>刷新数据</Tooltip.Content></Tooltip><div className="time-block"><strong suppressHydrationWarning>{new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</strong><span suppressHydrationWarning>{lastUpdated.toLocaleDateString("zh-CN", { month: "long", day: "numeric", weekday: "short" })}</span></div><Avatar className="avatar" size="sm"><Avatar.Fallback>管</Avatar.Fallback></Avatar></div></header>
+       <header className="topbar"><div className="topbar-left"><Button className="mobile-menu" isIconOnly size="sm" variant="ghost" onClick={() => setMenuOpen(true)} aria-label="打开导航"><Menu size={19} /></Button><span>{currentLabel}</span><i /> <small>城市无障碍设施智能监管</small></div><div className="topbar-right"><Chip className={`connection-state state-${dataError ? "offline" : overview.linkStatus}`} size="sm" variant="soft"><i />{dataError ? "数据接口异常" : realtimeConnected ? "实时推送正常" : "轮询同步中"}</Chip><Tooltip><Button className="icon-button" isIconOnly size="sm" variant="ghost" onClick={refresh} aria-label="刷新数据"><RefreshCw size={16} className={loading ? "spin" : ""} /></Button><Tooltip.Content>刷新数据</Tooltip.Content></Tooltip><div className="time-block"><strong suppressHydrationWarning>{new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</strong><span suppressHydrationWarning>{lastUpdated.toLocaleDateString("zh-CN", { month: "long", day: "numeric", weekday: "short" })}</span></div><Avatar className="avatar" size="sm"><Avatar.Fallback>管</Avatar.Fallback></Avatar></div></header>
       <main>
+        {dataError && <div className="data-notice"><TriangleAlert size={16} />{dataError}。页面保留最后一次成功同步的数据，并自动重试。</div>}
         {view === "overview" && <>
           <section className="hero-line">
             <div className="hero-copy"><span className="eyebrow">城市盲道智能监管平台</span><h1>城市盲道通行态势</h1><p>从边缘识别到现场处置，持续追踪每一处影响安全通行的占用。</p></div>
             <div className="hero-signal">
               <div className="signal-orbit" aria-hidden="true"><i className="orbit-ring ring-one" /><i className="orbit-ring ring-two" /><span className="orbit-dot dot-one" /><span className="orbit-dot dot-two" /><span className="orbit-dot dot-three" /><div className="hero-signal-count"><span>当前需处置</span><strong>{overview.kpis.activeEvents}<small>起</small></strong></div></div>
-              <div className="source-badges"><span><Radio size={14} />树莓派实机</span><span><Cloud size={14} />自有云接入</span><span className={`mode-${overview.dataMode}`}>{overview.dataMode === "live" ? "实时数据" : overview.dataMode === "hybrid" ? "实机 + 历史样例" : "演示数据"}</span></div>
+              <div className="source-badges"><span><Radio size={14} />边缘设备实机</span><span><Cloud size={14} />自有云接入</span><span className={`mode-${overview.dataMode}`}>{overview.dataMode === "live" ? "真实入库数据" : "等待真实数据"}</span></div>
             </div>
           </section>
-          <section className="metric-grid"><MetricCard icon={Signal} label="在线终端" value={`${overview.kpis.onlineDevices}/${overview.kpis.totalDevices}`} detail="边缘链路稳定" tone="cyan" /><MetricCard icon={AlertTriangle} label="活动事件" value={overview.kpis.activeEvents} detail="需要关注与处置" tone="orange" /><MetricCard icon={Activity} label="今日事件" value={overview.kpis.todayEvents} detail="较昨日 +12.5%" tone="blue" /><MetricCard icon={ShieldCheck} label="闭环率" value={overview.kpis.closureRate} suffix="%" detail={`平均响应 ${overview.kpis.averageResponseMin} 分钟`} tone="green" /></section>
+          <section className="metric-grid"><MetricCard icon={Signal} label="在线终端" value={`${overview.kpis.onlineDevices}/${overview.kpis.totalDevices}`} detail={overview.kpis.totalDevices ? "来自设备心跳" : "尚无设备上报"} tone="cyan" /><MetricCard icon={AlertTriangle} label="活动事件" value={overview.kpis.activeEvents} detail="需要关注与处置" tone="orange" /><MetricCard icon={Activity} label="今日事件" value={overview.kpis.todayEvents} detail={`较昨日 ${overview.kpis.todayChangePercent > 0 ? "+" : ""}${overview.kpis.todayChangePercent}%`} tone="blue" /><MetricCard icon={ShieldCheck} label="闭环率" value={overview.kpis.closureRate} suffix="%" detail={overview.kpis.averageResponseMin === null ? "暂无接单响应样本" : `平均响应 ${overview.kpis.averageResponseMin} 分钟`} tone="green" /></section>
           <div className="primary-grid"><MapStage config={config} overview={overview} onEvent={setSelectedEvent} /><div className="right-stack"><DeviceHealth device={overview.device} /><EventQueue events={overview.recentEvents} onSelect={setSelectedEvent} /></div></div>
-          <div className="secondary-grid"><TrendPanel overview={overview} /><section className="panel insight-panel"><div className="panel-head"><div><span className="eyebrow">风险洞察</span><h2>事件类型构成</h2></div><CircleGauge size={20} /></div><div className="donut-wrap"><div className="css-donut"><div><strong>24</strong><span>本周事件</span></div></div><div className="legend-list"><span><i className="risk-a" /><b>非机动车</b><strong>46%</strong></span><span><i className="risk-b" /><b>施工杂物</b><strong>33%</strong></span><span><i className="risk-c" /><b>两轮机动车</b><strong>21%</strong></span></div></div><div className="insight-note"><TriangleAlert size={15} /><span>18:00–20:00 为高发时段，建议增加巡检频次。</span></div></section></div>
+          <div className="secondary-grid"><TrendPanel overview={overview} /><section className="panel insight-panel"><div className="panel-head"><div><span className="eyebrow">风险洞察</span><h2>活动事件类型构成</h2></div><CircleGauge size={20} /></div><div className="donut-wrap"><div className="css-donut"><div><strong>{overview.recentEvents.length}</strong><span>活动事件</span></div></div><div className="legend-list">{eventComposition.map(([label, count], index) => <span key={label}><i className={`risk-${String.fromCharCode(97 + index)}`} /><b>{label}</b><strong>{count}</strong></span>)}{eventComposition.length === 0 && <span><b>暂无活动事件</b></span>}</div></div><div className="insight-note"><Database size={15} /><span>统计仅来自当前已入库的真实活动事件。</span></div></section></div>
           <EventTable events={overview.recentEvents} onSelect={setSelectedEvent} />
         </>}
         {view === "events" && <div className="subpage"><div className="subpage-head"><div><span className="eyebrow">活动事件</span><h1>事件中心</h1><p>这里只展示未接单和处置中的活动障碍；复核通过后自动移出。</p></div><button className="primary-action"><BellRing size={16} />告警策略</button></div><EventTable events={overview.recentEvents} onSelect={setSelectedEvent} /></div>}
         {view === "devices" && <DeviceFleetView fallbackDevice={overview.device} />}
-        {view === "analytics" && <div className="subpage"><div className="subpage-head"><div><span className="eyebrow">ANALYTICS</span><h1>趋势分析</h1><p>观察事件高发时段、边缘性能和设备稳定性。</p></div><button className="chip">最近 24 小时 <ChevronDown size={13} /></button></div><div className="analytics-grid"><TrendPanel overview={overview} /><section className="panel performance-panel"><div className="panel-head"><div><span className="eyebrow">边缘性能</span><h2>推理延迟与帧率</h2></div></div><div className="performance-kpis"><div><span>平均推理延迟</span><strong>{Math.round(overview.trends.inferenceMs.reduce((a,b)=>a+b,0)/overview.trends.inferenceMs.length)} <small>ms</small></strong></div><div><span>平均采集帧率</span><strong>{(overview.trends.cameraFps.reduce((a,b)=>a+b,0)/overview.trends.cameraFps.length).toFixed(1)} <small>FPS</small></strong></div></div><div className="latency-list">{overview.trends.labels.map((label,index)=><div key={label}><span>{label}:00</span><i><b style={{width:`${Math.min(100,overview.trends.inferenceMs[index]/12)}%`}} /></i><strong>{overview.trends.inferenceMs[index]} ms</strong></div>)}</div></section></div></div>}
+        {view === "analytics" && <div className="subpage"><div className="subpage-head"><div><span className="eyebrow">ANALYTICS</span><h1>趋势分析</h1><p>观察事件高发时段、边缘性能和设备稳定性。</p></div><button className="chip">今日 3 小时分桶 <ChevronDown size={13} /></button></div><div className="analytics-grid"><TrendPanel overview={overview} /><section className="panel performance-panel"><div className="panel-head"><div><span className="eyebrow">边缘性能</span><h2>推理延迟与帧率</h2></div></div><div className="performance-kpis"><div><span>平均推理延迟</span><strong>{inferenceValues.length ? Math.round(inferenceValues.reduce((a,b)=>a+b,0)/inferenceValues.length) : "—"} <small>ms</small></strong></div><div><span>平均采集帧率</span><strong>{cameraValues.length ? (cameraValues.reduce((a,b)=>a+b,0)/cameraValues.length).toFixed(1) : "—"} <small>FPS</small></strong></div></div><div className="latency-list">{overview.trends.labels.map((label,index)=>{const value=overview.trends.inferenceMs[index]; return <div key={label}><span>{label}:00</span><i><b style={{width:`${value === null ? 0 : Math.min(100,value/12)}%`}} /></i><strong>{value === null ? "无样本" : `${value} ms`}</strong></div>;})}</div></section></div></div>}
         {view === "volunteers" && <VolunteerAdminView />}
         {view === "settings" && <IntegrationView overview={overview} />}
       </main>

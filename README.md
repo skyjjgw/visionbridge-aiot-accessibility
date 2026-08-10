@@ -15,7 +15,7 @@
 传统无障碍设施巡检依赖人工发现、线下流转和重复沟通，障碍位置、现场证据、处置责任和复核结果难以形成统一数据。视桥围绕“发现、审核、派单、处置、复核”建立可追踪状态流，并坚持两条技术边界：
 
 - 识别在边缘设备本地完成，原始画面不上传第三方 AI 平台；
-- 遥测、事件、图片和视频直接进入自有云，不依赖研华 IoTSuite 等第三方业务平台。
+- 遥测、事件、图片和视频直接进入自有云，不经研华 IoTSuite 转发；研华托管 Dify 仅异步返回数据清洗建议，不成为业务事实源。
 
 研华 IoTSuite 的早期适配代码已退出主运行链路，迁移背景见 [历史兼容说明](docs/legacy/advantech-iotsuite.md)。
 
@@ -23,12 +23,12 @@
 
 | 模块 | 当前能力 | 主要技术 |
 | --- | --- | --- |
-| 边缘端 | USB 摄像头采集、LC76G GNSS、YOLOv8 ONNX 推理、事件去抖、离线重试、快照与遥测直传 | Python、OpenCV DNN、ONNX |
-| 自有云 API | 邮箱验证码、志愿者上报、审核、公共派单、接单、处理、复核、设备与事件查询 | FastAPI、SQLite |
+| 边缘端 | USB 摄像头采集、LC76G GNSS、YOLOv8 ONNX 推理、N-of-M 时间窗确认、周期证据、稳定清除、离线重试 | Python、OpenCV DNN、ONNX |
+| 自有云 API | 邮箱验证码、原始数据留存、质量检查、时空去重、研华托管 Dify 异步分析、审核与派单闭环 | FastAPI、SQLite |
 | 管理大屏 | 事件地图、审核与派单、设备健康、多设备入口、WebRTC/HLS 播放 | React、TypeScript、Vinext |
 | 志愿者 App | QQ 邮箱验证码、拍照上报、系统定位、地图选点、地图接单、任务处理、个人记录删除 | Flutter、WebView、高德地图 JS API |
 | 媒体链路 | 边缘硬件编码、RTSP 发布、WebRTC/WHEP 低延迟播放、HLS 回退、TURN 中继 | FFmpeg、MediaMTX、coturn |
-| 数据同步 | 大屏 3 秒、App 6 秒自动刷新，页面恢复与写操作后主动刷新 | HTTP 短轮询 |
+| 数据同步 | 业务变更触发 WebSocket 通知，客户端重取 REST 权威快照，断线低频轮询兜底 | WebSocket + REST |
 
 尚未完成的生产化工作包括 PostgreSQL 迁移、对象存储、消息队列、多实例协调、完整管理员 RBAC、端到端可观测性、隐私合规流程和规模化压力测试。
 
@@ -46,12 +46,14 @@ flowchart LR
     subgraph Cloud[视桥自有云]
         API[FastAPI API] --> DB[(SQLite)]
         API --> Uploads[(上报与快照)]
+        API --> Worker[异步清洗任务]
         Media[MediaMTX] <--> Turn[coturn]
         Nginx[Nginx] --> API
         Nginx --> Media
     end
 
     Agent -->|HTTPS 遥测/事件| API
+    Worker -->|Dify Workflow API| Advantech[研华创新应用平台]
     Encoder -->|RTSP/SSH 隧道| Media
     Dashboard[管理大屏] -->|REST + WebRTC| Nginx
     App[Flutter 志愿者 App] -->|REST + 图片上传| Nginx
@@ -67,6 +69,7 @@ flowchart LR
 | 志愿者上报 | App 相机、文字与地图选点 | multipart HTTP | 管理审核、公共地图 |
 | 实时视频 | 边缘端 FFmpeg | MediaMTX RTSP，浏览器 WHEP/WebRTC | 设备详情 |
 | 邮箱验证码 | 自有云 SMTP 客户端 | QQ SMTP SSL | 志愿者登录 |
+| 清洗建议 | 自有云异步任务 | 研华托管 Dify Workflow API | 质量评分、优先级与人工复核提示 |
 
 完整组件职责、状态机和一致性策略见 [系统架构](docs/ARCHITECTURE.md)，HTTP 接口见 [API 概览](docs/API.md)。
 
@@ -158,6 +161,7 @@ sudo chmod 0640 /etc/visionbridge/edge.env
 - `VISIONBRIDGE_MEDIA_PUBLISH_SECRET`：设备媒体发布；
 - `VISIONBRIDGE_TURN_SECRET`：TURN REST 鉴权；
 - `VISIONBRIDGE_SMTP_AUTH_CODE`：QQ 邮箱 SMTP 授权码。
+- `VISIONBRIDGE_ADVANTECH_DIFY_API_KEY`：研华托管 Dify 工作流密钥，只保存在云服务器的 `agent.env`。
 
 凭据若曾出现在提交、Issue、日志、截图或聊天记录中，必须立即吊销并重新生成。安全报告规则见 [SECURITY.md](SECURITY.md)。
 
@@ -172,7 +176,7 @@ npm test
 
 # API（从仓库根目录运行）
 pip install -r services/api/requirements-dev.txt
-python -m pytest services/api/test_volunteer_api.py
+python -m pytest services/api
 
 # Flutter
 cd apps/volunteer
@@ -180,7 +184,8 @@ flutter analyze
 flutter test
 
 # Python 语法检查
-python -m py_compile services/api/app.py edge/pi-runtime/visionbridge_edge_agent.py
+python -m py_compile services/api/app.py services/api/analysis.py edge/pi-runtime/detection_state.py edge/pi-runtime/visionbridge_edge_agent.py
+python -m unittest discover -s edge/tests -v
 ```
 
 CI 会在每次推送和 Pull Request 上执行管理大屏构建测试、API 流程测试、Flutter 静态检查与测试，以及边缘/部署 Python 语法检查。

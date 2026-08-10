@@ -19,11 +19,15 @@
 | 管理 | `GET /admin/reports` | 管理员 | 待审核/已审核上报 |
 | 管理 | `PATCH /admin/reports/{id}` | 管理员 | 审核、入库并可发布任务 |
 | 管理 | `PATCH /admin/tasks/{id}` | 管理员 | 复核、驳回或关闭任务 |
+| 分析 | `GET /admin/analysis/status` | 管理员 | 分析提供方、任务状态和质量标记汇总 |
+| 分析 | `GET /admin/analysis/jobs` | 管理员 | 查询异步清洗任务与错误 |
+| 分析 | `POST /admin/analysis/jobs/{id}/retry` | 管理员 | 人工重试失败或待配置任务 |
 | 边缘 | `POST /telemetry` | 上传令牌 | 设备心跳、识别指标、事件和快照 |
 | 大屏 | `GET /overview` | 只读策略 | 系统概览 |
 | 大屏 | `GET /events` | 只读策略 | 事件地图与列表 |
 | 设备 | `GET /devices` | 只读策略 | 多设备健康与媒体状态 |
 | 媒体 | `POST /media/auth` | MediaMTX | 发布/读取授权回调 |
+| 实时 | `WS /ws/realtime` | 同源策略 | 业务状态失效通知，客户端收到后重取 REST 快照 |
 
 ## 错误约定
 
